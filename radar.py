@@ -21,25 +21,38 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 BASE = 'https://comic.naver.com'
-UA = 'WebtoonRadar/0.2 (+https://github.com/imfucgingsaxmaster/webtoon-survey)'
+UA = 'WebtoonRadar/0.3 (+https://github.com/imfucgingsaxmaster/webtoon-survey)'
 WEEKDAYS = {'MONDAY':'월','TUESDAY':'화','WEDNESDAY':'수','THURSDAY':'목',
             'FRIDAY':'금','SATURDAY':'토','SUNDAY':'일'}
-ALLOWED = {'/api/webtoon/titlelist/weekday', '/api/webtoon/titlelist/finished'}
+ALLOWED = {'/api/webtoon/titlelist/weekday', '/api/webtoon/titlelist/finished', '/api/article/list/info'}
 
 
 def utcnow():
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
+class PublicRedirect(PermissionError):
+    """A title left the allowlisted public endpoint, often to require login."""
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,req,fp,code,msg,headers,newurl):
+        raise PublicRedirect('Redirect blocked; public title metadata unavailable')
+
+
 class PublicClient:
+    base = BASE
+    allowed = ALLOWED
+    landing = '/webtoon'
+
     def __init__(self, delay=1.2):
         self.delay = max(1.0, delay)
         self.last_request = 0.0
         self.robots = urllib.robotparser.RobotFileParser()
-        raw = self._read(BASE + '/robots.txt').decode('utf-8')
+        raw = self._read(self.base + '/robots.txt').decode('utf-8')
         self.robots.parse(raw.splitlines())
         self.robots_hash = hashlib.sha256(raw.encode()).hexdigest()
-        if not self.robots.can_fetch(UA, BASE + '/webtoon'):
+        if not self.robots.can_fetch(UA, self.base + self.landing):
             raise PermissionError('Public catalogue is disallowed by robots.txt')
 
     def _read(self, url):
@@ -47,15 +60,15 @@ class PublicClient:
         self.last_request = time.monotonic()
         req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept': 'application/json,text/plain'})
         # No automatic retry on authentication, rate limits or other access errors.
-        with urllib.request.urlopen(req, timeout=40) as response:
-            if urllib.parse.urlsplit(response.url).netloc != 'comic.naver.com':
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=40) as response:
+            if urllib.parse.urlsplit(response.url).netloc != urllib.parse.urlsplit(self.base).netloc:
                 raise PermissionError('Unexpected redirect; collection stopped')
             return response.read(12_000_001)
 
     def get(self, path, **params):
-        if path not in ALLOWED:
+        if path not in self.allowed:
             raise PermissionError('Endpoint is not on the metadata allowlist')
-        url = BASE + path + '?' + urllib.parse.urlencode(params)
+        url = self.base + path + '?' + urllib.parse.urlencode(params)
         if not self.robots.can_fetch(UA, url):
             raise PermissionError('Endpoint is disallowed by robots.txt')
         raw = self._read(url)
@@ -232,7 +245,7 @@ def compare(current, previous):
             'position_changes':changes}
 
 
-def export_excel(snapshot, output, changes):
+def export_excel(snapshot, output, changes, metadata=None):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -241,7 +254,7 @@ def export_excel(snapshot, output, changes):
     summary.title = '수집 요약'
     for row in [('Webtoon Radar','공개 카탈로그 전수 조사'),('관측 시각 UTC',snapshot['observed_at']),
                 ('고유 작품 수',len(snapshot['titles'])),('목록 항목 수',len(snapshot['memberships'])),
-                ('범위',snapshot['scope']),('네이버시리즈',snapshot['series_status']),
+                ('범위',snapshot['scope']),('네이버시리즈','공개 홈·일간 TOP100·이전 발견 작품 (상세 지표 Excel 참고)' if metadata else snapshot['series_status']),
                 ('비교', '첫 관측: 증감 산출 대기' if changes['baseline'] else '이전 저장 관측과 비교'),
                 ('자료 원칙','첨부 조사 PDF는 데이터셋으로 사용하지 않음'),
                 ('지표 주의','목록 순서는 해당 그룹의 인기순 정렬 위치. 전체 통합 순위·조회수·매출 아님')]:
@@ -293,7 +306,7 @@ def korean_font():
     pdfmetrics.registerFont(UnicodeCIDFont('HYSMyeongJo-Medium')); return 'HYSMyeongJo-Medium'
 
 
-def export_pdf(snapshot, path, changes):
+def export_pdf(snapshot, path, changes, metadata=None):
     from reportlab.pdfgen import canvas
     from reportlab.lib.colors import HexColor
     font=korean_font(); c=canvas.Canvas(str(path),pagesize=(595.28,841.89))
@@ -313,10 +326,11 @@ def export_pdf(snapshot, path, changes):
                  '첨부 조사 PDF는 보고서의 참고자료이며 프로젝트 데이터가 아닙니다.',
                  '인기순 위치는 목록 내부 순서이며 조회수·매출·통합 순위가 아닙니다.',
                  '첫 관측입니다. 추세는 이후 관측이 누적되면 비교합니다.' if changes['baseline'] else '이전 관측과 작품 진입·이탈 및 목록 위치 변화를 비교합니다.',
-                 '네이버시리즈: 자동 수집 대기. 허가된 자료 제공 경로가 필요합니다.',
+                 (f"상세 지표: 웹툰 {len(metadata.get('webtoon',{})):,}개 · 시리즈 {len(metadata.get('series',{})):,}개 (관측별 시각 별도)." if metadata else '네이버시리즈: 상세 공개 지표 수집 전입니다.'),
+                 '관심 수는 네이버웹툰, 다운로드·댓글 수는 시리즈 공개 표시값입니다.',
                  '베스트도전·도전, 비공개·판매 종료·앱 전용 작품은 포함하지 않습니다.']:
         c.setFont(font,9);c.drawString(42,y,line);y-=24
-    c.setFont(font,9);c.drawString(42,45,'출처: comic.naver.com/webtoon | Webtoon Radar v0.2')
+    c.setFont(font,9);c.drawString(42,45,'출처: comic.naver.com / series.naver.com | Webtoon Radar v0.3')
     c.save()
 
 
@@ -344,10 +358,19 @@ def run(offline=False, root=ROOT):
              'list_entries':len(snapshot['memberships']),'status_counts':dict(Counter(t['status'] for t in snapshot['titles'])),
              'coverage':snapshot['coverage'],'series_status':snapshot['series_status'],
              'baseline':changes['baseline'],'added':len(changes['added']),'removed':len(changes['removed'])}
+    from metadata import load_metadata, build_rows, export_search_excel, export_metadata
+    metadata=load_metadata(root/'metadata_latest.json')
+    summary['detail_coverage']={key:len(metadata.get(key,{})) for key in ('webtoon','series')}
+    summary['detail_runs']=metadata.get('runs',{})
+    summary['series_status']='공개 홈·일간 TOP100·이전 발견 작품. 전체 카탈로그 아님.'
+    for file in sorted((root/'metadata_history').glob('*.json.gz')):
+        export_metadata(json.loads(gzip.decompress(file.read_bytes()).decode()),db)
+    export_metadata(metadata,db)
     (output/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
     (output/'changes.json').write_text(json.dumps(changes,ensure_ascii=False,indent=2),encoding='utf-8')
-    export_excel(snapshot,output/'webtoon_radar.xlsx',changes)
-    export_pdf(snapshot,output/'summary.pdf',changes)
+    export_excel(snapshot,output/'webtoon_radar.xlsx',changes,metadata)
+    export_search_excel(build_rows(snapshot,metadata),output/'webtoon_radar_search.xlsx')
+    export_pdf(snapshot,output/'summary.pdf',changes,metadata)
     print(json.dumps(summary,ensure_ascii=False,indent=2),flush=True)
     return snapshot
 
