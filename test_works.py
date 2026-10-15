@@ -65,7 +65,7 @@ class WorkTests(unittest.TestCase):
         self.assertEqual(row['interest_display'],'0')
         pending=next(w for w in result if w['webtoon_id']=='2')
         self.assertEqual(pending['interest_display'],'상세 수집 중')
-        self.assertEqual(pending['downloads_display'],'해당 연재처 없음')
+        self.assertEqual(pending['downloads_display'],'시리즈 자료 없음')
         self.cache['webtoon']['1']=fixtures.MetadataTests().webtoon(count=None)
         row=next(w for w in works.build_works(self.snapshot,self.cache) if w['webtoon_id']=='1')
         self.assertEqual(row['interest_display'],'미제공')
@@ -85,6 +85,8 @@ class WorkTests(unittest.TestCase):
         self.assertEqual(works.query_title_ids(self.snapshot,'같은 제목'),['1'])
         self.assertEqual(works.query_title_ids(self.snapshot,'['),[])
         self.assertLessEqual(len(works.query_title_ids(self.snapshot,'Test',limit=2)),2)
+        self.snapshot['titles'][0]['title']='숲'
+        self.assertEqual(works.query_title_ids(self.snapshot,'숲'),['1'])
 
     def test_han_pen_name_annotation_matches_without_fuzzy_author_matching(self):
         self.assertEqual(works.creators('운(雲) / 배민기'),works.creators('운 / 배민기'))

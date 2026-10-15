@@ -80,7 +80,7 @@ restricted=len((webtoon_ids & metadata.get('unavailable',{}).get('webtoon',{}).k
 st.progress((known+restricted)/len(webtoon_ids),text=f'웹툰 상세 확인 {known:,} / {len(webtoon_ids):,}개 · 공개 접근 제한 {restricted:,}개')
 if known+restricted<len(webtoon_ids):
     st.caption('전체 상세정보를 순차 수집 중입니다. 아직 확인되지 않은 작품도 제목으로 검색하면 공개 정보를 바로 확인합니다.')
-st.caption('관심 수는 네이버웹툰, 다운로드·댓글 수는 시리즈의 공개 집계입니다. 약 표시는 축약된 원문을 환산한 값입니다.')
+st.caption('관심 수는 네이버웹툰, 다운로드·댓글 수는 시리즈의 공개 집계입니다. 약 표시는 축약된 원문을 환산한 값입니다. 연재처는 수집한 공개 자료 기준입니다.')
 
 @st.fragment(run_every='60s')
 def refresh_status():

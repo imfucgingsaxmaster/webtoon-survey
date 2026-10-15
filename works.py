@@ -89,7 +89,7 @@ def build_works(snapshot,metadata):
             work[key]=metric['value']
             if metric['value'] is not None:
                 label=('약 ' if metric.get('approximate') else '')+metric['display']
-            elif key not in provenance:label='해당 연재처 없음'
+            elif key not in provenance:label='웹툰 자료 없음' if key=='interest' else '시리즈 자료 없음'
             else:
                 src=webtoon if key=='interest' else serial
                 label='미제공' if src.get('observed_at') else src['collection_state']
@@ -112,8 +112,9 @@ def filter_works(works,query='',tags=(),mode='모두 포함',minimums=None,venue
 def query_title_ids(snapshot,query,limit=12):
     """Only a title/creator query can trigger a bounded public detail lookup."""
     query=query.strip().casefold()
-    if len(query)<2:return []
-    found=[r for r in snapshot['titles'] if query in (r['title']+' '+r['author']).casefold()]
+    if not query:return []
+    found=[r for r in snapshot['titles'] if r['title'].casefold()==query or
+           (len(query)>=2 and query in (r['title']+' '+r['author']).casefold())]
     found.sort(key=lambda r:(r['title'].casefold()!=query,len(r['title']),int(r['title_id'])))
     return [r['title_id'] for r in found[:limit]]
 
@@ -136,7 +137,7 @@ def export_works_excel(works,path):
     for line in ['동일 제목에 작가가 모두 일치하거나 2명 이상 일치하는 경우에만 통합합니다. 후보가 여러 작품이면 별도 표시합니다.',
                  '관심은 웹툰, 다운로드·댓글은 시리즈 대표 연재판의 값입니다. 서로 다른 플랫폼·판본의 수치는 합산하지 않습니다.',
                  '시리즈에 여러 판본이 있으면 연재판을 우선하며, 모든 판본의 원자료와 출처는 별도 시트에 보존합니다.',
-                 '빈 숫자는 해당 연재처 없음·미제공·수집 중·공개 접근 제한이며 0이 아닙니다.',
+                 '빈 숫자는 연재처 자료 없음·미제공·수집 중·공개 접근 제한이며 0이 아닙니다. 자료 없음은 해당 플랫폼에 미연재라는 뜻이 아닙니다.',
                  '만·억 등 축약된 원문은 근삿값입니다. 태그·최소값 검색도 표시값 환산 기준입니다.']:
         note.append([line])
     for sheet in wb:
