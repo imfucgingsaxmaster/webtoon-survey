@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['radar.py', 'app.py', 'tests.py', 'requirements.txt', '.github/workflows/weekly.yml']
+    paths: ['radar.py', 'metadata.py', 'app.py', 'tests.py', 'requirements.txt', '.github/workflows/weekly.yml']
 permissions:
   contents: write
 concurrency:
@@ -14,7 +14,7 @@ concurrency:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,14 +27,29 @@ jobs:
       - name: Verify collector and data integrity
         run: python -m unittest tests -v
       - name: Collect entire public catalogue
+        id: catalogue
         run: python radar.py
+      - name: Collect public title metrics and genres
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            python metadata.py --webtoon-limit 100 --series-limit 100
+          else
+            python metadata.py
+          fi
+      - name: Export catalogue and searchable metrics
+        if: always() && steps.catalogue.outcome == 'success'
+        run: python radar.py --offline
       - name: Preserve catalogue history
+        if: always() && steps.catalogue.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add catalog_latest.json history/
+          if [ -f metadata_latest.json ]; then git add metadata_latest.json; fi
+          if [ -d metadata_history ]; then git add metadata_history/; fi
           if ! git diff --cached --quiet; then
-            git commit -m "data: update public webtoon catalogue"
+            git commit -m "data: update catalogue and public title metrics"
+            git pull --rebase origin main
             git push
           fi
       - name: Save Excel, summary and SQLite
