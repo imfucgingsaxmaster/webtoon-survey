@@ -5,14 +5,28 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['radar.py', 'metadata.py', 'app.py', 'tests.py', 'requirements.txt', '.github/workflows/weekly.yml']
+    paths: ['*.py', 'requirements.txt', '.github/workflows/weekly.yml']
 permissions:
   contents: write
-concurrency:
-  group: webtoon-radar
-  cancel-in-progress: false
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Verify catalogue, work linking and live updates
+        run: python -m unittest discover -p 'test*.py' -v
   analyze:
+    needs: validate
+    if: github.event_name != 'push'
+    concurrency:
+      group: webtoon-radar
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -24,18 +38,27 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Install Korean font
         run: sudo apt-get update -qq && sudo apt-get install -y fonts-nanum
-      - name: Verify collector and data integrity
-        run: python -m unittest tests -v
       - name: Collect entire public catalogue
         id: catalogue
         run: python radar.py
       - name: Collect public title metrics and genres
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            python metadata.py --webtoon-limit 100 --series-limit 100
-          else
-            python metadata.py
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Publish each checkpoint so dashboards do not wait for the full run.
+          for batch in $(seq 1 30); do
+            python metadata.py --webtoon-limit 200 --series-limit 0
+            git add catalog_latest.json history/ metadata_latest.json metadata_history/
+            if ! git diff --cached --quiet; then
+              git commit -m "data: publish public detail checkpoint"
+              git pull --rebase origin main
+              git push
+            fi
+            state=$(python -c "import json; print(json.load(open('metadata_latest.json'))['runs']['webtoon']['state'])")
+            if [ "$state" = "complete" ]; then break; fi
+          done
+          if [ "$state" != "complete" ]; then echo 'Full catalogue detail collection did not complete'; exit 1; fi
+          python metadata.py --webtoon-limit 0
       - name: Export catalogue and searchable metrics
         if: always() && steps.catalogue.outcome == 'success'
         run: python radar.py --offline
