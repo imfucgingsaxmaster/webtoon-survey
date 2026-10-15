@@ -1,0 +1,13 @@
+{
+  "team_trend_pdf": {
+    "approved": true,
+    "kind": "user_supplied_research",
+    "permission_basis": "User supplied the research PDF and requested analysis and publication for this coursework on 2026-10-16. No permission for automated collection from platform sites is implied.",
+    "platforms": [
+      "네이버웹툰"
+    ],
+    "reference": "trend_research.pdf, pp. 4-6",
+    "observation_date": "not specified in source",
+    "source_sha256": "784b0bcbe7937e33758f7f6a2e08bb94298676f937d9beccdd6803160aa93a0f"
+  }
+}

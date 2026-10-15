@@ -1,0 +1,22 @@
+[
+  {
+    "original": "윤승준김예은.pdf",
+    "published_file": "trend_research.pdf",
+    "sha256": "784b0bcbe7937e33758f7f6a2e08bb94298676f937d9beccdd6803160aa93a0f"
+  },
+  {
+    "original": "이의강.pdf",
+    "published_file": "coding_research.pdf",
+    "sha256": "6036e5b91f0391a53edf4db42fb3d25927ded1ed5211866e60c3569d5174e1e6"
+  },
+  {
+    "original": "주민재.pdf",
+    "published_file": "ux_research.pdf",
+    "sha256": "1f3e1885622e63037e344c9dd28c99a0f3c8bc0ee105dbaaf9c85ae17dbb6153"
+  },
+  {
+    "original": "허영은지수민.pdf",
+    "published_file": "systems_research.pdf",
+    "sha256": "b39d647a102a87f228f0c4d1fd140f94a416eaae425df17ab53bb137e741db8d"
+  }
+]
