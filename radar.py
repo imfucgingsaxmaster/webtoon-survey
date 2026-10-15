@@ -358,8 +358,10 @@ def run(offline=False, root=ROOT):
              'list_entries':len(snapshot['memberships']),'status_counts':dict(Counter(t['status'] for t in snapshot['titles'])),
              'coverage':snapshot['coverage'],'series_status':snapshot['series_status'],
              'baseline':changes['baseline'],'added':len(changes['added']),'removed':len(changes['removed'])}
-    from metadata import load_metadata, build_rows, export_search_excel, export_metadata
-    metadata=load_metadata(root/'metadata_latest.json')
+    from metadata import export_metadata
+    from live_data import load_live_metadata
+    from works import build_works, export_works_excel
+    metadata=load_live_metadata(root)
     summary['detail_coverage']={key:len(metadata.get(key,{})) for key in ('webtoon','series')}
     summary['detail_runs']=metadata.get('runs',{})
     summary['series_status']='공개 홈·일간 TOP100·이전 발견 작품. 전체 카탈로그 아님.'
@@ -369,7 +371,7 @@ def run(offline=False, root=ROOT):
     (output/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
     (output/'changes.json').write_text(json.dumps(changes,ensure_ascii=False,indent=2),encoding='utf-8')
     export_excel(snapshot,output/'webtoon_radar.xlsx',changes,metadata)
-    export_search_excel(build_rows(snapshot,metadata),output/'webtoon_radar_search.xlsx')
+    export_works_excel(build_works(snapshot,metadata),output/'webtoon_radar_search.xlsx')
     export_pdf(snapshot,output/'summary.pdf',changes,metadata)
     print(json.dumps(summary,ensure_ascii=False,indent=2),flush=True)
     return snapshot

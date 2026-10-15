@@ -5,3 +5,5 @@ __pycache__/
 *.sqlite*
 outputs/
 .pytest_cache/
+.radar_cache/
+detail_overrides.json
