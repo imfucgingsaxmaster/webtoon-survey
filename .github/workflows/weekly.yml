@@ -1,0 +1,52 @@
+name: Weekly Webtoon Radar
+on:
+  schedule:
+    - cron: '17 0 * * 1' # Monday 09:17 Asia/Seoul
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['radar.py', 'app.py', 'tests.py', 'requirements.txt', '.github/workflows/weekly.yml']
+permissions:
+  contents: write
+concurrency:
+  group: webtoon-radar
+  cancel-in-progress: false
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Install Korean font
+        run: sudo apt-get update -qq && sudo apt-get install -y fonts-nanum
+      - name: Verify collector and data integrity
+        run: python -m unittest tests -v
+      - name: Collect entire public catalogue
+        run: python radar.py
+      - name: Preserve catalogue history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalog_latest.json history/
+          if ! git diff --cached --quiet; then
+            git commit -m "data: update public webtoon catalogue"
+            git push
+          fi
+      - name: Save Excel, summary and SQLite
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webtoon-radar-${{ github.run_number }}
+          path: outputs/
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Run summary
+        run: |
+          echo '### Webtoon Radar public catalogue' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Real public metadata only. Research PDFs are not data inputs.' >> "$GITHUB_STEP_SUMMARY"
+          cat outputs/summary.json >> "$GITHUB_STEP_SUMMARY"
