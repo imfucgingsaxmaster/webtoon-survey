@@ -1,66 +1,68 @@
-import csv
-import json
+import copy
+import io
 import tempfile
 import unittest
 from pathlib import Path
-from radar import ROOT, FIELDS, validate_rows, ingest, load_rows, summarize, export_excel
+from openpyxl import load_workbook
+import radar
 
-class RadarTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.db = Path(self.tmp.name)/'test.sqlite'
-        self.registry = json.loads((ROOT/'sources.json').read_text(encoding='utf-8'))
-        with (ROOT/'research.csv').open(encoding='utf-8-sig',newline='') as f:
-            self.rows = list(csv.DictReader(f))
+class FakeClient:
+    robots_hash='test-only'
+    def get(self,path,**params):
+        def item(n):return {'titleId':n,'titleName':f'Test {n}','author':'Tester','starScore':9.5,'finish':False}
+        if path.endswith('/weekday'):
+            if params.get('week'):return {'titleList':[item(1),item(9)]}
+            return {'titleListMap':{day:[item(i+1)] for i,day in enumerate(radar.WEEKDAYS)}}
+        page=params['page']
+        return {'titleList':[item(10+page)],'pageInfo':{'page':page,'totalRows':2,'totalPages':2,'nextPage':page+1 if page<2 else 0}}
 
-    def test_research_totals_and_no_invented_metrics(self):
-        rows=validate_rows(self.rows,self.registry)
-        s=summarize(rows)
-        self.assertEqual(s['records'],105)
-        self.assertEqual(s['unique_titles'],102)
-        self.assertEqual(s['ranked_records'],0)
-        self.assertEqual(s['undated_records'],105)
-        self.assertEqual(s['platform_counts']['네이버시리즈'],0)
+class CatalogueTests(unittest.TestCase):
+    def setUp(self):self.snapshot=radar.collect(FakeClient())
+    def test_all_pages_and_deduplication(self):
+        self.assertEqual(len(self.snapshot['titles']),10);self.assertEqual(len(self.snapshot['memberships']),11)
+        self.assertEqual(self.snapshot['coverage'][-1]['pages'],2);radar.validate_snapshot(self.snapshot)
+    def test_missing_weekday_fails(self):
+        client=FakeClient();base=client.get
+        def get(path,**p):
+            result=base(path,**p)
+            if 'titleListMap' in result:del result['titleListMap']['MONDAY']
+            return result
+        client.get=get
+        with self.assertRaises(ValueError):radar.collect(client)
+    def test_changed_pagination_fails(self):
+        client=FakeClient();base=client.get
+        def get(path,**p):
+            result=base(path,**p)
+            if p.get('page')==2:result['pageInfo']['totalRows']=3
+            return result
+        client.get=get
+        with self.assertRaises(ValueError):radar.collect(client)
+    def test_duplicate_cross_page_fails(self):
+        client=FakeClient();base=client.get
+        def get(path,**p):
+            result=base(path,**p)
+            if p.get('page')==2:result['titleList'][0]['titleId']=11
+            return result
+        client.get=get
+        with self.assertRaises(ValueError):radar.collect(client)
+    def test_snapshot_integrity_and_idempotence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db=Path(folder)/'test.sqlite';self.assertTrue(radar.ingest(self.snapshot,db));self.assertFalse(radar.ingest(self.snapshot,db))
+            altered=copy.deepcopy(self.snapshot);altered['titles'][0]['title']='changed'
+            with self.assertRaises(ValueError):radar.ingest(altered,db)
+            with radar.connect(db) as con:self.assertEqual(con.execute('SELECT COUNT(*) FROM catalogue_titles').fetchone()[0],10)
+    def test_pdf_dataset_rejected(self):
+        with self.assertRaises(ValueError):radar.validate_snapshot({'schema_version':1,'source':'research.pdf'})
+    def test_no_fake_views(self):
+        self.assertNotIn('viewCount',radar.normalize({'titleId':1,'titleName':'Example','viewCount':0}))
+    def test_excel_formula_injection(self):
+        self.snapshot['titles'][0]['title']='=1+1';output=io.BytesIO()
+        radar.export_excel(self.snapshot,output,radar.compare(self.snapshot,None))
+        self.assertEqual(load_workbook(io.BytesIO(output.getvalue()))['전체 작품']['B2'].data_type,'s')
+    def test_comparison_baseline(self):
+        self.assertTrue(radar.compare(self.snapshot,None)['baseline'])
+        self.assertEqual(radar.compare(self.snapshot,self.snapshot)['added'],[])
+    def test_disallowed_endpoint(self):
+        with self.assertRaises(PermissionError):object.__new__(radar.PublicClient).get('/webtoon/detail',titleId=1)
 
-    def test_idempotent_import(self):
-        self.assertEqual(ingest(ROOT/'research.csv',ROOT/'sources.json',self.db),105)
-        self.assertEqual(ingest(ROOT/'research.csv',ROOT/'sources.json',self.db),0)
-        self.assertEqual(len(load_rows(self.db)),105)
-
-    def test_unapproved_source_rejected(self):
-        self.rows[0]['source_id']='unapproved'
-        with self.assertRaises(ValueError): validate_rows(self.rows,self.registry)
-
-    def test_duplicate_rejected(self):
-        with self.assertRaises(ValueError): validate_rows(self.rows+[self.rows[0]],self.registry)
-
-    def test_invalid_rank_and_date_rejected(self):
-        for field,value in [('rank','0'),('rank','-1'),('observed_on','2099-01-01'),('weekday','토요일')]:
-            rows=[dict(self.rows[0])]; rows[0][field]=value
-            with self.assertRaises(ValueError): validate_rows(rows,self.registry)
-
-    def test_modified_snapshot_rolls_back(self):
-        ingest(ROOT/'research.csv',ROOT/'sources.json',self.db)
-        self.rows[0]['genre']='변경된 분류'
-        path=Path(self.tmp.name)/'changed.csv'
-        with path.open('w',encoding='utf-8',newline='') as f:
-            w=csv.DictWriter(f,fieldnames=FIELDS); w.writeheader(); w.writerows(self.rows)
-        with self.assertRaises(ValueError): ingest(path,ROOT/'sources.json',self.db)
-        self.assertNotEqual(load_rows(self.db)[0]['genre'],'변경된 분류')
-
-    def test_series_accepted_with_permission(self):
-        registry={'licensed':{'approved':True,'permission_basis':'unit test permission','kind':'licensed_export','platforms':['네이버시리즈']}}
-        row=dict(self.rows[0],source_id='licensed',platform='네이버시리즈')
-        self.assertEqual(validate_rows([row],registry)[0]['platform'],'네이버시리즈')
-
-    def test_excel_formula_injection_stays_text(self):
-        from openpyxl import load_workbook
-        row=validate_rows([dict(self.rows[0],title='=1+1')],self.registry)
-        path=Path(self.tmp.name)/'export.xlsx'
-        export_excel(row,path)
-        cell=load_workbook(path)['조사목록']['B2']
-        self.assertEqual(cell.data_type,'s')
-        self.assertEqual(cell.value,'=1+1')
-
-if __name__=='__main__': unittest.main()
+if __name__=='__main__':unittest.main()

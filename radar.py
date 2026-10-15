@@ -1,231 +1,359 @@
-"""Webtoon Radar: authorized CSV imports, immutable snapshots, local analytics.
+"""Collect the entire public Naver Webtoon catalogue; never ingest report PDFs.
 
-No platform scraping, private endpoints, cookies, or credentials are used.
+Only allowlisted public list metadata is requested. No accounts, cookies,
+episode bodies, images, comments, private data, or access-control bypasses.
 """
 from __future__ import annotations
 import argparse
-import csv
+import gzip
 import hashlib
 import json
-import re
 import sqlite3
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import urllib.robotparser
 from collections import Counter
-from datetime import date, datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PLATFORMS = ('네이버웹툰', '네이버시리즈')
-DAYS = ('월', '화', '수', '목', '금', '토', '일', '미상')
-FIELDS = ('source_id', 'snapshot_id', 'observed_on', 'platform', 'title', 'weekday',
-          'genre', 'rank', 'source_position', 'source_page', 'source_ref')
+BASE = 'https://comic.naver.com'
+UA = 'WebtoonRadar/0.2 (+https://github.com/imfucgingsaxmaster/webtoon-survey)'
+WEEKDAYS = {'MONDAY':'월','TUESDAY':'화','WEDNESDAY':'수','THURSDAY':'목',
+            'FRIDAY':'금','SATURDAY':'토','SUNDAY':'일'}
+ALLOWED = {'/api/webtoon/titlelist/weekday', '/api/webtoon/titlelist/finished'}
 
+
+def utcnow():
+    return datetime.now(timezone.utc).isoformat(timespec='seconds')
+
+
+class PublicClient:
+    def __init__(self, delay=1.2):
+        self.delay = max(1.0, delay)
+        self.last_request = 0.0
+        self.robots = urllib.robotparser.RobotFileParser()
+        raw = self._read(BASE + '/robots.txt').decode('utf-8')
+        self.robots.parse(raw.splitlines())
+        self.robots_hash = hashlib.sha256(raw.encode()).hexdigest()
+        if not self.robots.can_fetch(UA, BASE + '/webtoon'):
+            raise PermissionError('Public catalogue is disallowed by robots.txt')
+
+    def _read(self, url):
+        time.sleep(max(0, self.delay - (time.monotonic() - self.last_request)))
+        self.last_request = time.monotonic()
+        req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept': 'application/json,text/plain'})
+        # No automatic retry on authentication, rate limits or other access errors.
+        with urllib.request.urlopen(req, timeout=40) as response:
+            if urllib.parse.urlsplit(response.url).netloc != 'comic.naver.com':
+                raise PermissionError('Unexpected redirect; collection stopped')
+            return response.read(12_000_001)
+
+    def get(self, path, **params):
+        if path not in ALLOWED:
+            raise PermissionError('Endpoint is not on the metadata allowlist')
+        url = BASE + path + '?' + urllib.parse.urlencode(params)
+        if not self.robots.can_fetch(UA, url):
+            raise PermissionError('Endpoint is disallowed by robots.txt')
+        raw = self._read(url)
+        if len(raw) > 12_000_000:
+            raise ValueError('Unexpectedly large response')
+        result = json.loads(raw)
+        if not isinstance(result, dict):
+            raise ValueError('Unexpected response schema')
+        return result
+
+
+def normalize(item):
+    ident = item.get('titleId')
+    title = item.get('titleName')
+    if not isinstance(ident, int) or ident < 1 or not isinstance(title, str) or not title.strip():
+        raise ValueError('Missing stable title ID or title name')
+    score = item.get('starScore')
+    if score is not None and (isinstance(score, bool) or not isinstance(score, (int,float)) or not 0 <= score <= 10):
+        raise ValueError('Invalid public rating')
+    return {'platform':'네이버웹툰', 'title_id':str(ident), 'title':title.strip(),
+            'author':str(item.get('author') or ''), 'rating':score,
+            'status':'완결' if item.get('finish') else ('휴재' if item.get('rest') else '연재'),
+            'url':f'{BASE}/webtoon/list?titleId={ident}'}
+
+
+def collect(client):
+    started = utcnow()
+    titles, memberships, coverage = {}, [], []
+
+    def add(items, group, start=0):
+        if not isinstance(items, list) or not items:
+            raise ValueError(f'Empty or invalid catalogue group: {group}')
+        seen = set()
+        for index, item in enumerate(items, start+1):
+            record = normalize(item)
+            key = record['title_id']
+            if key in seen:
+                raise ValueError(f'Duplicate ID inside {group}: {key}')
+            seen.add(key)
+            # Preserve finished/rest flags across overlapping catalogue groups.
+            previous = titles.get(key)
+            if previous and previous['status'] == '완결':
+                record['status'] = '완결'
+            titles[key] = record
+            memberships.append({'title_id':key,'group':group,'position':index})
+
+    weekday = client.get('/api/webtoon/titlelist/weekday', order='user').get('titleListMap')
+    if not isinstance(weekday, dict) or not set(WEEKDAYS).issubset(weekday):
+        raise ValueError('One or more weekday lists are missing')
+    for key, label in WEEKDAYS.items():
+        add(weekday[key], label)
+        coverage.append({'group':label,'items':len(weekday[key]),'expected':len(weekday[key]),'pages':1})
+    daily = client.get('/api/webtoon/titlelist/weekday', week='dailyPlus', order='user').get('titleList')
+    add(daily, '매일+')
+    coverage.append({'group':'매일+','items':len(daily),'expected':len(daily),'pages':1})
+
+    page, expected, pages, finished_ids, finished_count = 1, None, None, set(), 0
+    while True:
+        response = client.get('/api/webtoon/titlelist/finished', order='USER', page=page)
+        info, items = response.get('pageInfo', {}), response.get('titleList')
+        if page == 1:
+            expected, pages = info.get('totalRows'), info.get('totalPages')
+            if not isinstance(expected,int) or not isinstance(pages,int) or not 1 <= pages <= 1000:
+                raise ValueError('Missing pagination totals')
+        if info.get('totalRows') != expected or info.get('totalPages') != pages or info.get('page') != page:
+            raise ValueError('Catalogue changed during pagination; retry a later run')
+        if not isinstance(items,list) or not items:
+            raise ValueError('Missing finished catalogue page')
+        ids = {str(x.get('titleId')) for x in items}
+        if finished_ids & ids:
+            raise ValueError('Duplicate finished title across pages; snapshot rejected')
+        finished_ids.update(ids)
+        add(items, '완결목록', finished_count)
+        finished_count += len(items)
+        if page % 10 == 0 or page == pages:
+            print(f'Finished catalogue {page}/{pages} pages, {finished_count}/{expected} rows', flush=True)
+        if page == pages:
+            break
+        if info.get('nextPage') != page + 1:
+            raise ValueError('Broken pagination sequence')
+        page += 1
+    if finished_count != expected:
+        raise ValueError('Incomplete catalogue; no snapshot will be published')
+    coverage.append({'group':'완결목록','items':finished_count,'expected':expected,'pages':pages})
+    ended = utcnow()
+    return {'schema_version':2,'snapshot_id':ended.replace(':','').replace('+0000','Z'),
+            'started_at':started,'observed_at':ended,'scope':'네이버웹툰 정식 공개 카탈로그: 요일별·매일+·완결 목록',
+            'source_url':BASE+'/webtoon','robots_sha256':client.robots_hash,
+            'collection_status':'complete',
+            'series_status':'대기: 전체 분류 목록 robots.txt 제한. 허가된 피드 확보 후 연결.',
+            'exclusions':['베스트도전·도전','판매 종료·비공개·앱 전용 등 공개 목록에 없는 작품',
+                          '회차 본문·이미지·댓글·개인정보·비공개 지표'],
+            'coverage':coverage,'titles':sorted(titles.values(),key=lambda x:int(x['title_id'])),
+            'memberships':memberships}
+
+
+def validate_snapshot(snapshot):
+    if snapshot.get('schema_version') != 2 or snapshot.get('collection_status') != 'complete':
+        raise ValueError('Expected a complete live catalogue snapshot, not a research document')
+    datetime.fromisoformat(snapshot['observed_at'])
+    ids = [x['title_id'] for x in snapshot['titles']]
+    if not ids or len(set(ids)) != len(ids):
+        raise ValueError('Empty or duplicate title IDs')
+    idset, keys = set(ids), set()
+    for item in snapshot['memberships']:
+        key = (item['title_id'], item['group'])
+        if key in keys or item['title_id'] not in idset or item['position'] < 1:
+            raise ValueError('Invalid or duplicate catalogue membership')
+        keys.add(key)
+    for group in snapshot['coverage']:
+        actual = sum(x['group']==group['group'] for x in snapshot['memberships'])
+        if group['expected'] != group['items'] or actual != group['items']:
+            raise ValueError('Coverage mismatch')
+
+
+@contextmanager
 def connect(path):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    Path(path).parent.mkdir(parents=True,exist_ok=True)
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.executescript('''
-    CREATE TABLE IF NOT EXISTS snapshots (
-      source_id TEXT, snapshot_id TEXT, digest TEXT NOT NULL, imported_at TEXT NOT NULL,
-      PRIMARY KEY(source_id, snapshot_id));
-    CREATE TABLE IF NOT EXISTS observations (
-      source_id TEXT NOT NULL, snapshot_id TEXT NOT NULL, observed_on TEXT,
-      platform TEXT NOT NULL, title TEXT NOT NULL, title_key TEXT NOT NULL,
-      weekday TEXT NOT NULL, genre TEXT NOT NULL, rank INTEGER,
-      source_position INTEGER NOT NULL, source_page INTEGER NOT NULL, source_ref TEXT NOT NULL,
-      PRIMARY KEY(source_id, snapshot_id, platform, title_key, weekday));
+    CREATE TABLE IF NOT EXISTS catalogue_snapshots(
+      snapshot_id TEXT PRIMARY KEY, observed_at TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS catalogue_titles(
+      snapshot_id TEXT, title_id TEXT, platform TEXT, title TEXT, author TEXT, rating REAL, status TEXT, url TEXT,
+      PRIMARY KEY(snapshot_id,title_id));
+    CREATE TABLE IF NOT EXISTS catalogue_memberships(
+      snapshot_id TEXT, title_id TEXT, group_name TEXT, position INTEGER,
+      PRIMARY KEY(snapshot_id,title_id,group_name));
     ''')
-    return con
-
-def title_key(value):
-    return re.sub(r'\s+', '', value).casefold()
-
-def validate_rows(rows, registry):
-    seen = set()
-    validated = []
-    for n, raw in enumerate(rows, 2):
-        r = {k: (raw.get(k) or '').strip() for k in FIELDS}
-        source = registry.get(r['source_id'])
-        if not source or source.get('approved') is not True or not source.get('permission_basis'):
-            raise ValueError(f'CSV {n}행: 승인되지 않은 데이터 출처')
-        if source.get('kind') not in ('user_supplied_research', 'licensed_export'):
-            raise ValueError(f'CSV {n}행: 지원하지 않는 수집 방식')
-        if not r['title'] or not r['snapshot_id'] or not r['source_ref'] or not r['genre']:
-            raise ValueError(f'CSV {n}행: 필수 항목 누락')
-        if r['platform'] not in PLATFORMS or r['platform'] not in source['platforms']:
-            raise ValueError(f'CSV {n}행: 허용되지 않은 플랫폼')
-        if r['weekday'] not in DAYS:
-            raise ValueError(f'CSV {n}행: 잘못된 요일')
-        if r['observed_on']:
-            d = date.fromisoformat(r['observed_on'])
-            if d > date.today():
-                raise ValueError(f'CSV {n}행: 미래 관측일')
-        r['observed_on'] = r['observed_on'] or None
-        for field in ('rank', 'source_position', 'source_page'):
-            value = r[field]
-            if field == 'rank' and not value:
-                r[field] = None
-            elif not value.isdigit() or int(value) < 1:
-                raise ValueError(f'CSV {n}행: {field}는 양의 정수여야 함')
-            else:
-                r[field] = int(value)
-        r['title_key'] = title_key(r['title'])
-        key = tuple(r[k] for k in ('source_id', 'snapshot_id', 'platform', 'title_key', 'weekday'))
-        if key in seen:
-            raise ValueError(f'CSV {n}행: 같은 스냅샷의 중복 작품·요일')
-        seen.add(key)
-        validated.append(r)
-    return validated
-
-def ingest(csv_path, registry_path, db_path):
-    registry = json.loads(Path(registry_path).read_text(encoding='utf-8'))
-    with Path(csv_path).open(encoding='utf-8-sig', newline='') as f:
-        reader = csv.DictReader(f)
-        if set(reader.fieldnames or ()) != set(FIELDS):
-            raise ValueError('CSV 열 이름이 입력 양식과 다릅니다.')
-        rows = validate_rows(list(reader), registry)
-    groups = {}
-    for r in rows:
-        groups.setdefault((r['source_id'], r['snapshot_id']), []).append(r)
-    con = connect(db_path)
-    added = 0
     try:
         with con:
-            for (source, snapshot), group in groups.items():
-                canonical = sorted(group, key=lambda r: (r['platform'], r['title_key'], r['weekday']))
-                digest = hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-                prior = con.execute('SELECT digest FROM snapshots WHERE source_id=? AND snapshot_id=?', (source, snapshot)).fetchone()
-                if prior:
-                    if prior['digest'] != digest:
-                        raise ValueError('기존 스냅샷 내용이 변경되었습니다. 수정본에는 새 snapshot_id를 사용하세요.')
-                    continue
-                con.execute('INSERT INTO snapshots VALUES (?,?,?,?)', (source, snapshot, digest, datetime.now(timezone.utc).isoformat()))
-                cols = FIELDS + ('title_key',)
-                con.executemany(f"INSERT INTO observations ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
-                                [tuple(r[k] for k in cols) for r in group])
-                added += len(group)
+            yield con
     finally:
         con.close()
-    return added
 
-def load_rows(db_path):
-    con = connect(db_path)
-    rows = [dict(x) for x in con.execute('SELECT * FROM observations ORDER BY source_id,snapshot_id,source_page,source_position')]
-    con.close()
-    return rows
 
-def summarize(rows):
-    return {'records': len(rows), 'unique_titles': len({(r['platform'], r['title_key']) for r in rows}),
-            'genre_counts': dict(Counter(r['genre'] for r in rows).most_common()),
-            'platform_counts': {p: sum(r['platform'] == p for r in rows) for p in PLATFORMS},
-            'undated_records': sum(not r['observed_on'] for r in rows),
-            'ranked_records': sum(r['rank'] is not None for r in rows)}
+def ingest(snapshot, db):
+    validate_snapshot(snapshot)
+    payload = json.dumps(snapshot,ensure_ascii=False,sort_keys=True)
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    with connect(db) as con:
+        old = con.execute('SELECT digest FROM catalogue_snapshots WHERE snapshot_id=?',(snapshot['snapshot_id'],)).fetchone()
+        if old:
+            if old['digest'] != digest:
+                raise ValueError('Snapshot ID already exists with different content')
+            return False
+        con.execute('INSERT INTO catalogue_snapshots VALUES(?,?,?,?)',
+                    (snapshot['snapshot_id'],snapshot['observed_at'],digest,payload))
+        con.executemany('INSERT INTO catalogue_titles VALUES(?,?,?,?,?,?,?,?)',
+            [(snapshot['snapshot_id'],*[t[k] for k in ('title_id','platform','title','author','rating','status','url')]) for t in snapshot['titles']])
+        con.executemany('INSERT INTO catalogue_memberships VALUES(?,?,?,?)',
+            [(snapshot['snapshot_id'],m['title_id'],m['group'],m['position']) for m in snapshot['memberships']])
+    return True
 
-def export_excel(rows, output):
-    # Python runtime export for GitHub Actions and Streamlit downloads.
+
+def flattened(snapshot):
+    groups = {}
+    for m in snapshot['memberships']:
+        groups.setdefault(m['title_id'],[]).append(m['group'])
+    return [dict(t,groups=', '.join(groups.get(t['title_id'],[]))) for t in snapshot['titles']]
+
+
+def compare(current, previous):
+    if previous is None:
+        return {'baseline':True,'added':[],'removed':[],'position_changes':[]}
+    current_ids = {x['title_id'] for x in current['titles']}
+    old_ids = {x['title_id'] for x in previous['titles']}
+    old_positions = {(x['title_id'],x['group']):x['position'] for x in previous['memberships']}
+    changes = [dict(x,change=old_positions[(x['title_id'],x['group'])]-x['position'])
+               for x in current['memberships'] if (x['title_id'],x['group']) in old_positions]
+    return {'baseline':False,'previous_observed_at':previous['observed_at'],
+            'added':sorted(current_ids-old_ids),'removed':sorted(old_ids-current_ids),
+            'position_changes':changes}
+
+
+def export_excel(snapshot, output, changes):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.worksheet.table import Table, TableStyleInfo
-    from openpyxl.utils import get_column_letter
     wb = Workbook()
     summary = wb.active
-    summary.title = '요약'
-    raw = wb.create_sheet('조사목록')
-    summary.append(['Webtoon Radar 조사 목록 분석'])
-    summary.append(['관측일 미기재 자료는 최신 순위로 해석하지 않음'])
-    summary.append(['분석 단위', '작품·요일별 조사 항목'])
-    summary.append(['조사 항목 수', len(rows)])
-    summary.append(['고유 작품 수', summarize(rows)['unique_titles']])
-    summary.append(['네이버시리즈 항목 수', sum(r['platform'] == PLATFORMS[1] for r in rows)])
-    summary.append([])
-    summary.append(['장르', '조사 항목 수', '비중'])
-    headers = ['플랫폼', '작품명', '요일', '장르', '관측일', '확인된 순위', '자료 ID', '원문 페이지', '원문 기재 순서', '출처']
-    raw.append(headers)
-    for r in rows:
-        vals = [r['platform'],r['title'],r['weekday'],r['genre'],r['observed_on'],r['rank'],r['snapshot_id'],r['source_page'],r['source_position'],r['source_ref']]
-        raw.append(vals)
-        # Untrusted source strings remain strings, including leading '='.
-        for c in raw[raw.max_row]:
-            if isinstance(c.value, str):
-                c.data_type = 's'
-    end = max(len(rows) + 1, 2)
-    for i, genre in enumerate(summarize(rows)['genre_counts'], 9):
-        summary.append([genre, f'=COUNTIF(조사목록!D2:D{end},A{i})', f'=IFERROR(B{i}/$B$4,0)'])
-        summary.cell(i, 3).number_format = '0.0%'
-    for sh in wb:
-        sh.sheet_view.showGridLines = False
-        for row in sh:
-            for c in row:
-                c.font = Font(name='맑은 고딕', size=11)
-                c.alignment = Alignment(vertical='center')
-        for c in sh[1]:
-            c.font = Font(name='맑은 고딕', size=11, color='FFFFFF', bold=True)
-            c.fill = PatternFill('solid', fgColor='16354D')
-        sh.row_dimensions[1].height = 30
-    for i, width in enumerate([20,48,10,16,16,16,28,16,20,80], 1):
-        raw.column_dimensions[get_column_letter(i)].width = width
-    raw.freeze_panes = 'C2'
-    if rows:
-        table = Table(displayName='ResearchRows', ref=f'A1:J{len(rows)+1}')
-        table.tableStyleInfo = TableStyleInfo(name='TableStyleMedium2', showRowStripes=True)
-        raw.add_table(table)
-    summary.column_dimensions['A'].width = 57
-    summary.column_dimensions['B'].width = 24
-    summary.column_dimensions['C'].width = 16
+    summary.title = '수집 요약'
+    for row in [('Webtoon Radar','공개 카탈로그 전수 조사'),('관측 시각 UTC',snapshot['observed_at']),
+                ('고유 작품 수',len(snapshot['titles'])),('목록 항목 수',len(snapshot['memberships'])),
+                ('범위',snapshot['scope']),('네이버시리즈',snapshot['series_status']),
+                ('비교', '첫 관측: 증감 산출 대기' if changes['baseline'] else '이전 저장 관측과 비교'),
+                ('자료 원칙','첨부 조사 PDF는 데이터셋으로 사용하지 않음'),
+                ('지표 주의','목록 순서는 해당 그룹의 인기순 정렬 위치. 전체 통합 순위·조회수·매출 아님')]:
+        summary.append(row)
+    ws = wb.create_sheet('전체 작품')
+    keys = ('title_id','title','author','status','rating','groups','url')
+    ws.append(('작품 ID','작품명','작가','상태','공개 별점','목록','출처 URL'))
+    for record in flattened(snapshot):
+        ws.append([record[k] for k in keys])
+    tab = Table(displayName='Catalogue',ref=ws.dimensions)
+    tab.tableStyleInfo = TableStyleInfo(name='TableStyleMedium2',showRowStripes=True)
+    ws.add_table(tab)
+    positions = wb.create_sheet('목록별 위치')
+    positions.append(('작품 ID','목록','인기순 위치'))
+    for item in snapshot['memberships']:
+        positions.append((item['title_id'],item['group'],item['position']))
+    coverage = wb.create_sheet('범위 검증')
+    coverage.append(('목록','수집 항목','응답 항목','페이지','검증'))
+    for i,c in enumerate(snapshot['coverage'],2):
+        coverage.append((c['group'],c['items'],c['expected'],c['pages'],f'=IF(B{i}=C{i},"일치","확인")'))
+    for sheet in wb:
+        sheet.freeze_panes = 'A2'
+        sheet.sheet_view.showGridLines = False
+        for row in sheet:
+            for cell in row:
+                cell.font = Font(name='맑은 고딕',size=10)
+                if isinstance(cell.value,str) and cell.value[:1] in ('=','+','-','@') and not (sheet.title=='범위 검증' and cell.column==5):
+                    cell.data_type = 's'  # protect spreadsheet formula injection in titles/authors
+        for cell in sheet[1]:
+            cell.fill = PatternFill('solid',fgColor='123C4A')
+            cell.font = Font(name='맑은 고딕',bold=True,color='FFFFFF')
+        for col in sheet.columns:
+            sheet.column_dimensions[col[0].column_letter].width = min(65,max(14,max(len(str(c.value or '')) for c in col[:80])+3))
+        sheet.row_dimensions[1].height = 26
+    summary.column_dimensions['B'].width=95
+    for row in summary:
+        row[1].alignment=Alignment(wrap_text=True,vertical='center')
+        summary.row_dimensions[row[0].row].height=32
     wb.save(output)
 
+
 def korean_font():
-    import os
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
-    candidates = [os.environ.get('RADAR_FONT', ''), 'C:/Windows/Fonts/malgun.ttf', '/usr/share/fonts/truetype/nanum/NanumGothic.ttf']
-    for p in candidates:
-        if p and Path(p).exists():
-            pdfmetrics.registerFont(TTFont('RadarKorean', p))
-            return 'RadarKorean'
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-    pdfmetrics.registerFont(UnicodeCIDFont('HYSMyeongJo-Medium'))
-    return 'HYSMyeongJo-Medium'
+    for path in ('C:/Windows/Fonts/malgun.ttf','/usr/share/fonts/truetype/nanum/NanumGothic.ttf'):
+        if Path(path).exists():
+            pdfmetrics.registerFont(TTFont('Korean',path)); return 'Korean'
+    pdfmetrics.registerFont(UnicodeCIDFont('HYSMyeongJo-Medium')); return 'HYSMyeongJo-Medium'
 
-def export_pdf(rows, output):
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib import colors
-    font = korean_font()
-    s = summarize(rows)
-    style = ParagraphStyle('body',fontName=font,fontSize=11,leading=18,wordWrap='CJK')
-    story = [Paragraph('Webtoon Radar 조사 요약',ParagraphStyle('title',parent=style,fontSize=21,leading=28)), Spacer(1,18)]
-    for text in [f"조사 항목 {s['records']}건 · 고유 작품 {s['unique_titles']}개",
-                 '분석 단위는 작품과 요일의 조합입니다. 같은 작품이 다른 요일에 등장하면 각각 집계합니다.',
-                 f"관측일 미상 {s['undated_records']}건. 네이버시리즈 {s['platform_counts'][PLATFORMS[1]]}건.",
-                 '현재 자료는 제출된 조사 목록입니다. 실시간 인기 순위, 전체 시장 점유율, 매출을 뜻하지 않습니다.']:
-        story += [Paragraph(text,style), Spacer(1,10)]
-    table = Table([['장르','조사 항목','비중']] + [[g,str(n),f'{n / s["records"]:.1%}'] for g,n in s['genre_counts'].items()],colWidths=[220,100,100])
-    table.setStyle(TableStyle([('FONTNAME',(0,0),(-1,-1),font),('FONTSIZE',(0,0),(-1,-1),11),('BOTTOMPADDING',(0,0),(-1,-1),10),('TOPPADDING',(0,0),(-1,-1),10),('BACKGROUND',(0,0),(-1,0),colors.HexColor('#EAF1F5'))]))
-    story += [table,Spacer(1,20),Paragraph('출처: 윤승준·김예은 제공 웹툰 트렌드 조사 PDF 4~6쪽. 자료 수록·시스템 검증일 2026년 10월 16일. 원문 관측일은 미기재.',style)]
-    SimpleDocTemplate(str(output),pagesize=A4,rightMargin=42,leftMargin=42,topMargin=45,bottomMargin=45).build(story)
 
-def run(csv_path=ROOT/'research.csv', registry_path=ROOT/'sources.json', db_path=ROOT/'outputs/radar.sqlite', out=ROOT/'outputs'):
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
-    added = ingest(csv_path, registry_path, db_path)
-    rows = load_rows(db_path)
-    summary = summarize(rows)
-    summary.update({'new_records': added, 'generated_at': datetime.now(timezone.utc).isoformat(),
-                    'data_status': 'user_supplied_research_not_live_rankings'})
-    (out/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
-    (out/'records.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
-    export_excel(rows,out/'webtoon_radar.xlsx')
-    export_pdf(rows,out/'weekly_summary.pdf')
-    print(json.dumps(summary,ensure_ascii=False,indent=2))
-    return summary
+def export_pdf(snapshot, path, changes):
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.colors import HexColor
+    font=korean_font(); c=canvas.Canvas(str(path),pagesize=(595.28,841.89))
+    c.setTitle('Webtoon Radar 공개 카탈로그 요약')
+    c.setFillColor(HexColor('#123C4A')); c.rect(0,690,596,152,fill=1,stroke=0)
+    c.setFillColor(HexColor('#FFFFFF')); c.setFont(font,26);c.drawString(42,785,'Webtoon Radar')
+    c.setFont(font,13);c.drawString(42,752,'네이버웹툰 공개 카탈로그 전체 조사')
+    c.setFont(font,10);c.drawString(42,720,snapshot['observed_at']+' | UTC')
+    c.setFillColor(HexColor('#172B32'));c.setFont(font,22)
+    c.drawString(42,646,f"고유 작품 {len(snapshot['titles']):,}개")
+    c.setFont(font,11);c.drawString(42,616,f"목록 항목 {len(snapshot['memberships']):,}개 · 작품 ID 기준 중복 제거")
+    y=574
+    for group in snapshot['coverage']:
+        c.drawString(42,y,f"{group['group']}  {group['items']:,}개  |  {group['pages']}페이지 확인"); y-=25
+    y-=10
+    for line in ['수집 범위: 요일별·매일+·완결의 공개된 정식 작품 목록.',
+                 '첨부 조사 PDF는 보고서의 참고자료이며 프로젝트 데이터가 아닙니다.',
+                 '인기순 위치는 목록 내부 순서이며 조회수·매출·통합 순위가 아닙니다.',
+                 '첫 관측입니다. 추세는 이후 관측이 누적되면 비교합니다.' if changes['baseline'] else '이전 관측과 작품 진입·이탈 및 목록 위치 변화를 비교합니다.',
+                 '네이버시리즈: 자동 수집 대기. 허가된 자료 제공 경로가 필요합니다.',
+                 '베스트도전·도전, 비공개·판매 종료·앱 전용 작품은 포함하지 않습니다.']:
+        c.setFont(font,9);c.drawString(42,y,line);y-=24
+    c.setFont(font,9);c.drawString(42,45,'출처: comic.naver.com/webtoon | Webtoon Radar v0.2')
+    c.save()
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--input',type=Path,default=ROOT/'research.csv')
-    parser.add_argument('--registry',type=Path,default=ROOT/'sources.json')
-    parser.add_argument('--db',type=Path,default=ROOT/'outputs/radar.sqlite')
-    parser.add_argument('--out',type=Path,default=ROOT/'outputs')
-    args = parser.parse_args()
-    run(args.input,args.registry,args.db,args.out)
+
+def run(offline=False, root=ROOT):
+    root=Path(root); output=root/'outputs'; output.mkdir(exist_ok=True)
+    latest=root/'catalog_latest.json'; history=root/'history'; history.mkdir(exist_ok=True)
+    if offline:
+        snapshot=json.loads(latest.read_text(encoding='utf-8'))
+    else:
+        snapshot=collect(PublicClient())
+    validate_snapshot(snapshot)
+    previous=None
+    db=output/'catalogue.sqlite'
+    for file in sorted(history.glob('*.json.gz')):
+        old=json.loads(gzip.decompress(file.read_bytes()).decode())
+        ingest(old,db)
+        if old['observed_at']<snapshot['observed_at'] and (previous is None or old['observed_at']>previous['observed_at']): previous=old
+    ingest(snapshot,db)
+    changes=compare(snapshot,previous)
+    encoded=json.dumps(snapshot,ensure_ascii=False,separators=(',',':')).encode()
+    if not offline:
+        temp=latest.with_suffix('.tmp');temp.write_bytes(encoded);temp.replace(latest)
+        (history/(snapshot['snapshot_id']+'.json.gz')).write_bytes(gzip.compress(encoded,mtime=0))
+    summary={'observed_at':snapshot['observed_at'],'unique_titles':len(snapshot['titles']),
+             'list_entries':len(snapshot['memberships']),'status_counts':dict(Counter(t['status'] for t in snapshot['titles'])),
+             'coverage':snapshot['coverage'],'series_status':snapshot['series_status'],
+             'baseline':changes['baseline'],'added':len(changes['added']),'removed':len(changes['removed'])}
+    (output/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
+    (output/'changes.json').write_text(json.dumps(changes,ensure_ascii=False,indent=2),encoding='utf-8')
+    export_excel(snapshot,output/'webtoon_radar.xlsx',changes)
+    export_pdf(snapshot,output/'summary.pdf',changes)
+    print(json.dumps(summary,ensure_ascii=False,indent=2),flush=True)
+    return snapshot
+
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--offline',action='store_true',help='Analyze an existing live catalogue snapshot without network access')
+    args=parser.parse_args()
+    run(offline=args.offline)
