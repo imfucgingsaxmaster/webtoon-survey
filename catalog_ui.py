@@ -5,14 +5,16 @@ from radar import public_cover_url
 
 STYLES='''<style>
 .stApp{background:#f7f8f5;color:#172b27}
-.block-container{max-width:1440px;padding:2.2rem 2.5rem 4rem}
-h1,h2,h3{color:#132e26;letter-spacing:-.04em}h1{font-size:2.5rem!important}
+.block-container{max-width:1440px;padding:1rem 2.5rem 3rem}
+[data-testid="stVerticalBlock"]{gap:.65rem}
+h1,h2,h3{color:#132e26;letter-spacing:-.04em}h1{font-size:2rem!important;padding-top:0!important}
 header[data-testid="stHeader"]{background:transparent}
-.radar-brand{font-size:15px;letter-spacing:.12em;font-weight:850;border-bottom:1px solid #dce4de;padding-bottom:18px;margin-bottom:26px}
+.radar-brand{font-size:15px;letter-spacing:.12em;font-weight:850;border-bottom:1px solid #dce4de;padding-bottom:12px;margin-bottom:12px}
 .radar-brand span{float:right;font-size:11px;letter-spacing:.08em;color:#73837a;padding-top:4px}
-.radar-kicker{color:#168465;font-size:12px;font-weight:750;letter-spacing:.15em;margin:0 0 12px}
-.radar-sub{color:#6e7c75;line-height:1.7;margin-bottom:24px}
-[data-testid="stForm"]{background:white;border:1px solid #dce4de;border-radius:12px;padding:20px}
+.radar-kicker{color:#168465;font-size:11px;font-weight:750;letter-spacing:.15em;margin:0}
+.radar-sub{color:#6e7c75;line-height:1.5;margin-bottom:4px}
+[data-testid="stForm"]{background:white;border:1px solid #dce4de;border-radius:12px;padding:14px}
+[data-testid="stBaseButton-primary"]{background:#168465;border-color:#168465}
 [data-testid="stMetric"]{background:white;border:1px solid #e0e7e1;border-radius:10px;padding:16px}
 [data-testid="stMetricValue"]{font-size:1.7rem}
 .radar-summary{color:#64786e;font-size:13px;border-top:1px solid #dce4de;padding:18px 0 4px}
