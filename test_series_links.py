@@ -52,6 +52,18 @@ class ResolutionTests(unittest.TestCase):
             self.client(second=radar.PublicRedirect('login','https://nid.naver.com')).resolve_original('381824')
         with self.assertRaises(ValueError):self.client(second=page(ident='51')).resolve_original('381824')
 
+    def test_restricted_detail_preserves_only_verified_canonical_link(self):
+        client=self.client(second=radar.PublicRedirect('login','https://nid.naver.com'))
+        with self.assertRaises(metadata.SeriesLinkRestricted) as result:client.resolve_original('381824')
+        self.assertEqual(result.exception.product_id,'50')
+        self.assertTrue(result.exception.resolution_url.endswith('originalProductId=381824'))
+        self.assertEqual(len(client.calls),2)
+
+    def test_promotion_label_is_not_a_season_or_different_title(self):
+        self.assertEqual(works.normalized(works.base_title('[드라마원작] 스위트홈')),works.normalized('스위트홈'))
+        self.assertNotEqual(works.base_title('스위트홈 [시즌2]'),'스위트홈')
+        self.assertNotEqual(works.base_title('[다른판본] 스위트홈'),'스위트홈')
+
     def test_common_id_merges_changed_creator_but_not_other_title(self):
         snapshot=radar.collect(fixtures.FakeClient())
         snapshot['titles'][0].update(title='싸움독학',author='박만사 / 김정현')
@@ -134,5 +146,43 @@ class LookupTests(unittest.TestCase):
             live_data.fill_series_links(['1'],self.root,series_factory=Blocked)
         self.assertEqual(result['state'],'temporarily_unavailable');self.assertEqual(Blocked.calls,1)
         self.assertIn('1',live_data.load_live_metadata(self.root)['webtoon'])
+
+    def test_restricted_link_shows_venue_without_inventing_metrics(self):
+        row=fixtures.MetadataTests().webtoon();row['contents_no']='99'
+        live_data.write_json(self.root/'metadata_latest.json',{'schema_version':1,'webtoon':{'1':row},'series':{}})
+        class Restricted:
+            def resolve_original(self,n):raise metadata.SeriesLinkRestricted('50',f'https://series.naver.com/comic/detail.series?originalProductId={n}')
+        with patch.object(live_data.time,'sleep'):
+            live_data.fill_series_links(['1'],self.root,series_factory=Restricted)
+        cache=live_data.load_live_metadata(self.root)
+        self.assertEqual(cache['series'],{})
+        work=next(w for w in works.build_works(self.snapshot,cache) if w['webtoon_id']=='1')
+        self.assertEqual(work['venues'],['네이버웹툰','네이버시리즈'])
+        self.assertTrue(work['series_url'].endswith('productNo=50'))
+        self.assertIsNone(work['downloads']);self.assertIsNone(work['comments'])
+        self.assertEqual(work['downloads_display'],'공개 접근 제한')
+        self.assertEqual(len(works.filter_works([work],venues=['네이버시리즈'])),1)
+        self.assertEqual(works.filter_works([work],minimums={'downloads':1}),[])
+        cache['series_checks']['1']['contents_no']='wrong'
+        self.assertEqual(next(w for w in works.build_works(self.snapshot,cache) if w['webtoon_id']=='1')['series_url'],'')
+
+    def test_one_bad_response_does_not_block_following_title(self):
+        first=fixtures.MetadataTests().webtoon();first['contents_no']='99'
+        second=copy.deepcopy(first);second.update(title_id='2',contents_no='100')
+        self.snapshot['titles'][1]['title']='같은 제목'
+        live_data.write_json(self.root/'catalog_latest.json',self.snapshot)
+        live_data.write_json(self.root/'metadata_latest.json',{'schema_version':1,'webtoon':{'1':first,'2':second},'series':{}})
+        class Partial:
+            def resolve_original(self,n):
+                if n=='99':raise ValueError('missing product heading')
+                row=metadata.parse_series(page(),50)
+                row.update(original_product_id=n,resolution_url=f'https://series.naver.com/comic/detail.series?originalProductId={n}')
+                return row
+        with patch.object(live_data.time,'sleep'):
+            result=live_data.fill_series_links(['1','2'],self.root,series_factory=Partial)
+        self.assertEqual(result,{'checked':2,'fetched':1,'state':'ready'})
+        cache=live_data.load_live_metadata(self.root)
+        self.assertEqual(cache['series_checks']['1']['state'],'parse_error')
+        self.assertEqual(cache['series_checks']['2']['state'],'linked')
 
 if __name__=='__main__':unittest.main()

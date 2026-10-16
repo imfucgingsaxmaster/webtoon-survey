@@ -6,7 +6,7 @@ import unicodedata
 from collections import defaultdict
 from metadata import build_rows, empty_metrics, search_tags
 
-FORMAT_LABELS={'독점','단행본','컬러연재','연재','완결','네이버웹툰'}
+FORMAT_LABELS={'독점','단행본','컬러연재','연재','완결','네이버웹툰','드라마원작','영화원작'}
 
 def normalized(text):
     return ''.join(c for c in unicodedata.normalize('NFKC',str(text)).casefold() if c.isalnum())
@@ -38,6 +38,17 @@ def build_works(snapshot,metadata):
     webtoons=[r for r in source_rows if r['platform']=='네이버웹툰']
     series=[r for r in source_rows if r['platform']=='네이버시리즈']
     groups={f"webtoon:{r['title_id']}":[r] for r in webtoons}
+    # A canonical official redirect proves the venue even when its metrics
+    # require login. Do not invent a Series title, author, or observation.
+    restricted_links={}
+    for row in webtoons:
+        check=metadata.get('series_checks',{}).get(row['title_id'],{})
+        product=str(check.get('series_id',''))
+        contents=row.get('contents_no')
+        if (check.get('state')=='linked_restricted' and contents and product.isdecimal()
+            and int(product)>0 and check.get('contents_no')==contents
+            and check.get('resolution_url')==f'https://series.naver.com/comic/detail.series?originalProductId={contents}'):
+            restricted_links[row['title_id']]=check
     index=defaultdict(list)
     for row in webtoons:index[normalized(base_title(row['title']))].append(row)
     unmatched=[]
@@ -65,6 +76,7 @@ def build_works(snapshot,metadata):
         webtoon=next((r for r in sources if r['platform']=='네이버웹툰'),None)
         serial=next((r for r in sources if r['platform']=='네이버시리즈'),None)
         primary=webtoon or serial
+        restricted=restricted_links.get(webtoon['title_id']) if webtoon and not serial else None
         metrics=empty_metrics();provenance={}
         for key,source in [('interest',webtoon),('downloads',serial),('comments',serial)]:
             if source:
@@ -72,6 +84,7 @@ def build_works(snapshot,metadata):
                 provenance[key]={'platform':source['platform'],'title_id':source['title_id'],
                                  'url':source['source_url'],'observed_at':source.get('observed_at','')}
         venues=list(dict.fromkeys(r['platform'] for r in sources))
+        if restricted:venues.append('네이버시리즈')
         source_states=[]
         for source in sources:
             key='webtoon' if source['platform']=='네이버웹툰' else 'series'
@@ -94,16 +107,20 @@ def build_works(snapshot,metadata):
               'new_basis':webtoon.get('new_basis','') if webtoon else '',
               'views':webtoon.get('public_views') if webtoon else None,
               'webtoon_url':webtoon['source_url'] if webtoon else '',
-              'series_url':serial['source_url'] if serial else '',
+              'series_url':serial['source_url'] if serial else (f"https://series.naver.com/comic/detail.series?productNo={restricted['series_id']}" if restricted else ''),
+              'series_link_state':'linked_restricted' if restricted else ('linked' if serial else 'unchecked'),
+              'series_link_check':restricted or {},
               'link_basis':' / '.join(dict.fromkeys(r.get('link_basis','제목 정규화·작가 일치') for r in sources if r['platform']=='네이버시리즈')) if len(sources)>1 else '단일 연재처',
               'collection_state':'확인 완료' if all(s=='확인 완료' for s in source_states) else ('공개 접근 제한' if '공개 접근 제한' in source_states else '상세 수집 중')}
         work['tags']=search_tags(work)
+        if restricted:work['link_basis']='공개 공통 작품번호의 공식 시리즈 주소 확인 · 지표 공개 접근 제한'
         if work['is_new']:work['tags'].insert(0,'신작')
         work['views_display']=f"{work['views']:,}" if work['views'] is not None else '미제공'
         for key,metric in metrics.items():
             work[key]=metric['value']
             if metric['value'] is not None:
                 label=('약 ' if metric.get('approximate') else '')+metric['display']
+            elif restricted and key in ('downloads','comments'):label='공개 접근 제한'
             elif key not in provenance:label='웹툰 연결 미확인' if key=='interest' else '시리즈 연결 미확인'
             else:
                 src=webtoon if key=='interest' else serial

@@ -9,12 +9,12 @@ pip install -r requirements.txt
 python -m unittest discover -p 'test*.py' -v
 python radar.py
 python metadata.py
-python series_links.py --limit 200
+python series_links.py --all --limit 50
 python radar.py --offline
 streamlit run app.py
 ```
 
-저장된 관측만 분석할 때는 `python radar.py --offline`을 실행합니다. 대시보드는 저장 관측을 읽고 공개 GitHub 저장소의 새 관측을 5분 간격으로 동기화합니다. 표지 카드를 누르면 상세 화면에서 공개 지표와 시리즈 공통번호 연결을 확인하고 재사용합니다. 검색은 띄어쓰기 차이를 허용합니다. `WEBTOON_RADAR_OFFLINE=1`이면 이 네트워크 동작을 모두 끕니다.
+저장된 관측만 분석할 때는 `python radar.py --offline`을 실행합니다. 대시보드는 저장 관측을 읽고 공개 GitHub 저장소의 새 관측을 5분 간격으로 동기화합니다. 작품명을 검색하거나 표지 카드를 누르면 미확인 시리즈 공통번호 연결을 확인하고 재사용합니다. 전체 연결 조사는 검색 화면을 열어 두지 않아도 GitHub Actions에서 진행합니다. 검색은 띄어쓰기 차이를 허용합니다. `WEBTOON_RADAR_OFFLINE=1`이면 이 네트워크 동작을 모두 끕니다.
 
 - 웹 대시보드: [공개 대시보드 열기](https://webtoon-survey-muhdfbebtwejruqvugroi6.streamlit.app/) · 작품명·작가·태그 검색, 장르, 관심·다운로드·댓글 태그 조합(모두/하나 이상), 최소값 필터, 지표 정렬, 상태·목록 필터, Excel 다운로드
 - Excel: 전체 작품, 목록별 인기순 위치, 범위 검증 및 출처. 별도 `webtoon_radar_search.xlsx`에 장르·공개 지표·원문 표시값·태그·작품별 관측 시각을 보존합니다.
@@ -34,7 +34,7 @@ streamlit run app.py
 
 ## 네이버시리즈
 
-[시리즈 robots.txt](https://series.naver.com/robots.txt)는 만화 전체 분류와 검색 경로의 자동 접근을 제한합니다. 허용된 [만화 홈](https://series.naver.com/comic/home.series)·[일간 TOP100](https://series.naver.com/comic/top100List.series), 이전 발견 작품, 네이버웹툰 공개 `contentsNo`에서 시리즈 `originalProductId`로 확인한 작품의 상세 페이지를 읽습니다. 공통번호 조회 시 같은 호스트의 정식 만화 `productNo` 주소로 향하는 1회 이동만 허용하며, 로그인·연령확인·소설·다른 호스트·다중 이동은 따르지 않습니다. 연결 뒤 제목도 검증합니다. 주간 실행마다 최대 200개를 미확인 작품부터 확인하고 중간 결과를 보존합니다. **시리즈 전체 카탈로그가 아닙니다.** 장르 링크의 표시명은 읽지만 제한된 분류 링크를 따라가지 않습니다.
+[시리즈 robots.txt](https://series.naver.com/robots.txt)는 만화 전체 분류와 검색 경로의 자동 접근을 제한합니다. 허용된 [만화 홈](https://series.naver.com/comic/home.series)·[일간 TOP100](https://series.naver.com/comic/top100List.series), 이전 발견 작품, 네이버웹툰 공개 `contentsNo`에서 시리즈 `originalProductId`로 확인한 작품의 상세 페이지를 읽습니다. 공통번호 조회 시 같은 호스트의 정식 만화 `productNo` 주소로 향하는 1회 이동만 허용하며, 로그인·연령확인·소설·다른 호스트·다중 이동은 따르지 않습니다. 공식 만화 주소까지 확인한 뒤 상세 페이지가 로그인으로 이동하는 경우 링크는 유지하고 지표를 공개 접근 제한으로 표시합니다. 공개 상세를 읽을 수 있는 경우 제목도 검증하며 드라마원작·영화원작 같은 명시적 홍보 표기만 정규화합니다. 주간 실행마다 미확인·갱신 대상인 전체 웹툰 목록을 순회하고 50건마다 공개 저장소에 중간 결과를 게시합니다. `Complete Series Links` 수동 실행으로 연결 조사만 재개할 수도 있습니다. **시리즈 전체 카탈로그가 아닙니다.** 장르 링크의 표시명은 읽지만 제한된 분류 링크를 따라가지 않습니다.
 
 ## 관심 수와 태그 검색
 
@@ -49,7 +49,7 @@ streamlit run app.py
 
 ## 주간 자동 실행
 
-GitHub Actions `Weekly Webtoon Radar`: 매주 월요일 **09:17 한국시간** 및 수동 실행. 테스트 → 전체 공개 목록 → 관심·장르·시리즈 지표 → SQLite/Excel/PDF → 관측 이력 저장 순서입니다. 코드 변경은 수집과 별개의 검증 작업만 실행하므로 진행 중인 전체 수집 때문에 배포 검증이 대기하지 않습니다. 예약·수동 실행은 전체 대상을 갱신하며 웹툰 상세정보 200건마다 중간 결과를 게시합니다. 대시보드는 게시 결과를 자동 반영합니다. 실행 상한은 150분입니다. `catalog_latest.json`, `metadata_latest.json`, `history/`, `metadata_history/`를 봇이 갱신합니다. 상세 수집 중 일부가 실패해도 성공한 관측을 보존하고 실패 상태를 표시합니다. 산출물은 Actions 실행 화면의 Artifacts에서 내려받습니다(90일 보존). 저장된 관측 이력으로 다음 실행의 SQLite를 재구축합니다. GitHub 예약 작업은 지연되거나 비활성 저장소에서 중단될 수 있습니다.
+GitHub Actions `Weekly Webtoon Radar`: 매주 월요일 **09:17 한국시간** 및 수동 실행. 테스트 → 전체 공개 목록 → 관심·장르·시리즈 지표 → SQLite/Excel/PDF → 관측 이력 저장 순서입니다. 코드 변경은 수집과 별개의 검증 작업만 실행하므로 진행 중인 전체 수집 때문에 배포 검증이 대기하지 않습니다. 예약·수동 실행은 전체 대상을 갱신하며 웹툰 상세정보 200건마다 중간 결과를 게시합니다. 대시보드는 게시 결과를 자동 반영합니다. 실행 상한은 360분이며 중단 후 체크포인트에서 이어서 실행할 수 있습니다. `catalog_latest.json`, `metadata_latest.json`, `history/`, `metadata_history/`를 봇이 갱신합니다. 상세 수집 중 일부가 실패해도 성공한 관측을 보존하고 실패 상태를 표시합니다. 산출물은 Actions 실행 화면의 Artifacts에서 내려받습니다(90일 보존). 저장된 관측 이력으로 다음 실행의 SQLite를 재구축합니다. GitHub 예약 작업은 지연되거나 비활성 저장소에서 중단될 수 있습니다.
 
 ## 과제 보고서 참고자료
 

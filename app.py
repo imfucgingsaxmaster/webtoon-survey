@@ -8,8 +8,8 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 from radar import ROOT,compare,validate_snapshot
-from live_data import load_live_metadata,sync_public_observations,fill_searched_titles,fill_series_links
-from works import build_works,filter_works,search_text,export_works_excel
+from live_data import load_live_metadata,sync_public_observations,fill_searched_titles,fill_series_links,series_coverage
+from works import build_works,filter_works,search_text,export_works_excel,query_title_ids
 from catalog_ui import STYLES,card_grid,shelf_works
 from trends import metric_history
 
@@ -88,6 +88,8 @@ def show_detail(work):
     if not work['series_url']:
         check=metadata.get('series_checks',{}).get(work['webtoon_id'],{})
         st.info('시리즈 연결 미확인 · '+check.get('reason','공개 공통번호로 연결을 확인하지 못했습니다.')+' 미연재를 의미하지 않습니다.')
+    elif work['series_link_state']=='linked_restricted':
+        st.info('시리즈 연결은 확인했습니다. 해당 시리즈 작품의 상세 정보에 로그인이 필요해 다운로드·댓글 수를 가져올 수 없습니다. 위의 ‘시리즈에서 보기’로 작품을 열 수 있습니다.')
     st.divider();st.subheader('숫자로 보는 작품의 변화')
     st.caption('실제로 수집한 시각의 값을 연결합니다. 앞으로 매주 관측이 쌓이면 더 긴 흐름을 볼 수 있습니다.')
     history=metric_history(work,metadata,snapshot)
@@ -120,8 +122,11 @@ def show_detail(work):
             st.caption(f"{source.get('author','')} · {source['collection_state']} · 관측 {korean_time(source.get('observed_at'))}")
             st.link_button('원문 확인 ↗',source['source_url'])
         st.caption('연결 근거: '+work['link_basis']+'. 플랫폼·판본 간 수치는 합산하지 않습니다.')
+        if work['series_link_check']:
+            st.link_button('공식 공통 작품번호 연결 근거 ↗',work['series_link_check']['resolution_url'])
 
 def show_search():
+    global metadata,works
     st.markdown('<p class="radar-kicker">FIND YOUR NEXT WEBTOON</p>',unsafe_allow_html=True)
     st.title('어떤 웹툰을 찾고 있나요?')
     st.markdown('<div class="radar-sub">표지로 만나고, 데이터로 살펴보세요. 같은 작품의 웹툰과 시리즈 정보를 한곳에서 확인합니다.</div>',unsafe_allow_html=True)
@@ -149,6 +154,13 @@ def show_search():
                       'downloads':m2.number_input('다운로드 수 이상',min_value=0,value=number_param('min_downloads'),step=100000),
                       'comments':m3.number_input('댓글 수 이상',min_value=0,value=number_param('min_comments'),step=1000)}
             st.caption('0은 조건을 적용하지 않습니다. 값이 없는 작품은 숫자 조건 검색에서 제외됩니다.')
+    if query and submitted:
+        ids=query_title_ids(snapshot,query,limit=3)
+        if ids:
+            with st.spinner('검색한 작품의 시리즈 연결을 확인하고 있습니다…'):
+                lookup=fill_series_links(ids,limit=3)
+            metadata=load_live_metadata();works=build_works(snapshot,metadata);pool=shelf_works(works,shelf)
+            if lookup['state']=='temporarily_unavailable':st.info('시리즈 응답이 지연되어 저장된 연결을 표시합니다. 자동 수집에서 이어서 확인합니다.')
     view=filter_works(pool,query,tags,minimums=minimums,venues=venues)
     if author:view=[w for w in view if search_text(author) in search_text(w['author'])]
     if genres:view=[w for w in view if set(genres)&set(w['genres'])]
@@ -191,8 +203,10 @@ else:show_search()
 with st.expander('수집 현황과 자료 안내'):
     known=sum(r['title_id'] in metadata['webtoon'] for r in snapshot['titles'])
     st.write(f"네이버웹툰 {len(snapshot['titles']):,}개 · 상세 확인 {known:,}개 · 시리즈 공개 작품 {len(metadata['series']):,}개")
+    coverage=series_coverage(snapshot,metadata)
+    st.progress(coverage['checked']/coverage['total'],text=f"시리즈 연결 조사 {coverage['checked']:,} / {coverage['total']:,}개 · 공식 연결 확인 {coverage['linked']:,}개 · 지표 접근 제한 {coverage['restricted']:,}개")
     st.caption('목록 관측 '+korean_time(snapshot['observed_at'])+' · 매주 월요일 09:17 자동 실행')
-    st.caption('시리즈는 홈·일간 TOP100 및 공개 공통 작품번호로 발견합니다. 상세 화면을 열 때 연결을 확인하고, 주간 실행마다 최대 200개를 추가 확인합니다. 시리즈 전체 카탈로그를 확보했다는 뜻은 아닙니다.')
+    st.caption('시리즈는 공개 공통 작품번호로 전체 웹툰 목록을 순회해 연결하고, 중간 결과도 검색에 반영합니다. 작품명 검색·상세 화면에서도 미확인 연결을 보완합니다. 로그인 등으로 상세 지표가 제한되어도 공식 작품 링크는 유지합니다. 네이버웹툰에 없는 시리즈 전체 카탈로그까지 확보했다는 뜻은 아닙니다.')
     st.caption('과거 값은 실제 관측만 보존합니다. 관심·조회수·다운로드는 서로 다른 지표이며 합산하지 않습니다. 자료 없음은 0이나 미연재를 뜻하지 않습니다.')
     st.link_button('GitHub 저장소와 실행 기록 ↗','https://github.com/imfucgingsaxmaster/webtoon-survey')
     if st.button('최신 공개 데이터 가져오기'):

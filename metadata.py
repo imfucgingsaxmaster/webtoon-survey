@@ -96,6 +96,13 @@ def parse_series(html, title_id, observed_at=None):
             'source_url':f'{SERIES}/comic/detail.series?productNo={title_id}',
             'observed_at':observed_at or utcnow()}
 
+class SeriesLinkRestricted(PublicRedirect):
+    """The official comic link is known, but its detail page requires access."""
+    def __init__(self, product_id, resolution_url):
+        super().__init__('Official Series link verified; public metrics restricted')
+        self.product_id=str(product_id)
+        self.resolution_url=resolution_url
+
 class SeriesClient(PublicClient):
     base=SERIES
     landing='/comic/home.series'
@@ -121,7 +128,10 @@ class SeriesClient(PublicClient):
             # Never follow login, age, novel, arbitrary host, or redirect chains.
             product_id=series_product_id(urllib.parse.urljoin(resolution_url,exc.target)) if exc.target else None
             if not product_id:raise
-            html=self.html('/comic/detail.series',productNo=product_id)
+            try:html=self.html('/comic/detail.series',productNo=product_id)
+            except PublicRedirect:
+                # Keep the already verified canonical link, never follow login.
+                raise SeriesLinkRestricted(product_id,resolution_url) from None
         soup=BeautifulSoup(html,'html.parser')
         share=soup.select_one('#spiButton2[data-url]')
         ident=series_product_id(share['data-url']) if share else None
