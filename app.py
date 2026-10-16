@@ -138,7 +138,7 @@ def show_search():
         genres=a.multiselect('장르',all_genres,default=[g for g in read_list('genres') if g in all_genres])
         all_tags=sorted({t for w in pool for t in w['tags'] if not t.startswith('장르:')})
         tags=b.multiselect('태그 · 모두 포함',all_tags,default=[t for t in read_list('tags') if t in all_tags])
-        new_only=c.checkbox('신작만 보기',value=st.query_params.get('new')=='1',help='네이버웹툰이 공식 신작으로 표시한 작품입니다.')
+        new_only=c.checkbox('신작만 보기',value=shelf!='finished' and st.query_params.get('new')=='1',disabled=shelf=='finished',help='네이버웹툰이 공식 신작으로 표시한 작품입니다. 완결 보관함에는 적용하지 않습니다.')
         with st.expander('요일·연재처·숫자 조건'):
             d,e=st.columns(2)
             days=['전체','월','화','수','목','금','토','일','매일+']
