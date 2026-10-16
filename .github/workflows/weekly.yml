@@ -28,7 +28,7 @@ jobs:
       group: webtoon-radar
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,7 +62,7 @@ jobs:
           if [ "$state" != "complete" ]; then echo 'Full catalogue detail collection did not complete'; exit 1; fi
           python metadata.py --webtoon-limit 0
       - name: Resolve public Webtoon to Series links
-        run: python series_links.py --limit 200
+        run: python series_links.py --all --limit 50 --publish
       - name: Export catalogue and searchable metrics
         if: always() && steps.catalogue.outcome == 'success'
         run: python radar.py --offline
