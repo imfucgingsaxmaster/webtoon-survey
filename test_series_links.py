@@ -61,6 +61,7 @@ class ResolutionTests(unittest.TestCase):
 
     def test_promotion_label_is_not_a_season_or_different_title(self):
         self.assertEqual(works.normalized(works.base_title('[드라마원작] 스위트홈')),works.normalized('스위트홈'))
+        self.assertEqual(works.base_title('패션왕 [웹툰]'),'패션왕')
         self.assertNotEqual(works.base_title('스위트홈 [시즌2]'),'스위트홈')
         self.assertNotEqual(works.base_title('[다른판본] 스위트홈'),'스위트홈')
 
@@ -184,5 +185,25 @@ class LookupTests(unittest.TestCase):
         cache=live_data.load_live_metadata(self.root)
         self.assertEqual(cache['series_checks']['1']['state'],'parse_error')
         self.assertEqual(cache['series_checks']['2']['state'],'linked')
+
+    def test_full_pass_publishes_batches_and_resumes_without_rechecking(self):
+        import series_links
+        import json
+        batches=[]
+        def fill(ids,root,limit):
+            batches.append(list(ids))
+            cache=live_data.load_live_metadata(root)
+            for ident in ids:cache['series_checks'][ident]={'version':live_data.LINK_CHECK_VERSION,'state':'no_identity','observed_at':radar.utcnow()}
+            live_data.write_json(root/'.radar_cache'/'details.json',cache)
+            return {'state':'ready','checked':len(ids),'fetched':0}
+        with patch.object(series_links,'fill_series_links',side_effect=fill),patch.object(series_links,'publish_checkpoint') as publish:
+            series_links.collect_links(self.root,limit=3,all_pending=True,publish=True)
+            self.assertEqual(publish.call_count,4)
+            series_links.collect_links(self.root,limit=3,all_pending=True)
+        self.assertEqual(len(batches),4)
+        self.assertEqual(len({i for batch in batches for i in batch}),10)
+        saved=json.loads((self.root/'metadata_latest.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['runs']['series_links']['state'],'complete')
+        self.assertEqual(saved['runs']['series_links']['remaining'],0)
 
 if __name__=='__main__':unittest.main()

@@ -6,7 +6,7 @@ import unicodedata
 from collections import defaultdict
 from metadata import build_rows, empty_metrics, search_tags
 
-FORMAT_LABELS={'독점','단행본','컬러연재','연재','완결','네이버웹툰','드라마원작','영화원작'}
+FORMAT_LABELS={'독점','단행본','컬러연재','연재','완결','네이버웹툰','웹툰','드라마원작','영화원작'}
 
 def normalized(text):
     return ''.join(c for c in unicodedata.normalize('NFKC',str(text)).casefold() if c.isalnum())

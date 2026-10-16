@@ -16,6 +16,7 @@ from trends import archive_observation
 REPOSITORY='imfucgingsaxmaster/webtoon-survey'
 _lock=threading.RLock()
 _last_lookup=0.0
+LINK_CHECK_VERSION=3
 
 def read_json(path,default):
     return json.loads(Path(path).read_text(encoding='utf-8')) if Path(path).exists() else copy.deepcopy(default)
@@ -150,7 +151,7 @@ def fill_searched_titles(title_ids,root=ROOT,client_factory=PublicClient):
 def series_check_due(check,metadata,now=None):
     if not check:return True
     if check.get('state')=='linked' and check.get('series_id') not in metadata['series']:return True
-    if check.get('state') not in ('linked','linked_restricted') and check.get('version',0)<2:return True
+    if check.get('state') not in ('linked','linked_restricted') and check.get('version',0)<LINK_CHECK_VERSION:return True
     hours=1 if check.get('state')=='parse_error' else 144
     return ((now or datetime.now(timezone.utc))-datetime.fromisoformat(check['observed_at'])).total_seconds()>=hours*3600
 
@@ -187,7 +188,7 @@ def fill_series_links(title_ids,root=ROOT,limit=3,webtoon_factory=PublicClient,s
             time.sleep(max(0,1.2-(time.monotonic()-_last_lookup)))
             for ident in ids:
                 detail=merged['webtoon'].get(ident,{})
-                check={'observed_at':utcnow(),'state':'unresolved','version':2}
+                check={'observed_at':utcnow(),'state':'unresolved','version':LINK_CHECK_VERSION}
                 try:
                     # Migrate old observations that discarded the public content ID.
                     if 'contents_no' not in detail:
