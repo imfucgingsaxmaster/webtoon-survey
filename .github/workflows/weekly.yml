@@ -60,9 +60,11 @@ jobs:
             if [ "$state" = "complete" ]; then break; fi
           done
           if [ "$state" != "complete" ]; then echo 'Full catalogue detail collection did not complete'; exit 1; fi
-          python metadata.py --webtoon-limit 0
       - name: Resolve public Webtoon to Series links
         run: python series_links.py --all --limit 50 --publish
+      - name: Refresh other discovered Series titles
+        # Linked titles already have fresh metrics; avoid fetching them twice.
+        run: python metadata.py --webtoon-limit 0
       - name: Export catalogue and searchable metrics
         if: always() && steps.catalogue.outcome == 'success'
         run: python radar.py --offline
