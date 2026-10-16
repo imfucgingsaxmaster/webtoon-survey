@@ -1,148 +1,214 @@
-"""Unified work discovery with public source provenance and fresh observations."""
+"""Cover-first search, separate completed shelf, and sourced work analytics."""
 import gzip
 import io
 import json
+import math
+from html import escape
+import altair as alt
 import pandas as pd
 import streamlit as st
-from radar import ROOT, compare, export_excel, validate_snapshot
-from live_data import load_live_metadata, sync_public_observations, fill_searched_titles
-from works import build_works, filter_works, query_title_ids, export_works_excel
+from radar import ROOT,compare,validate_snapshot
+from live_data import load_live_metadata,sync_public_observations,fill_searched_titles,fill_series_links
+from works import build_works,filter_works,search_text,export_works_excel
+from catalog_ui import STYLES,card_grid,shelf_works
+from trends import metric_history
 
-st.set_page_config(page_title='Webtoon Radar',page_icon='📡',layout='wide')
-st.markdown('<style>.stApp{background:#f6f8fa}h1{color:#123c4a}[data-testid="stMetric"]{background:white;border:1px solid #dce7eb;border-radius:12px;padding:16px}</style>',unsafe_allow_html=True)
-st.caption('WEBTOON RADAR / 하나의 작품, 여러 연재처')
-st.title('작품을 발견하는 새로운 기준')
-st.write('네이버웹툰과 시리즈의 같은 작품을 함께 보고, 관심 수·장르·태그로 찾아보세요.')
+st.set_page_config(page_title='Webtoon Radar · 작품 탐색',page_icon='📡',layout='wide',initial_sidebar_state='collapsed')
+st.markdown(STYLES,unsafe_allow_html=True)
+st.markdown('<div class="radar-brand">◉ WEBTOON RADAR<span>작품을 찾고, 변화를 읽다</span></div>',unsafe_allow_html=True)
 
 def load_snapshots():
     data={}
+    for path in sorted((ROOT/'history').glob('*.json.gz')):
+        value=json.loads(gzip.decompress(path.read_bytes()));validate_snapshot(value);data[value['snapshot_id']]=value
     latest=ROOT/'catalog_latest.json'
     if latest.exists():
         value=json.loads(latest.read_text(encoding='utf-8-sig'));validate_snapshot(value);data[value['snapshot_id']]=value
-    for path in sorted((ROOT/'history').glob('*.json.gz')):
-        value=json.loads(gzip.decompress(path.read_bytes()).decode());validate_snapshot(value);data[value['snapshot_id']]=value
-    return sorted(data.values(),key=lambda x:x['observed_at'],reverse=True)
+    return sorted(data.values(),key=lambda r:r['observed_at'],reverse=True)
+
+def korean_time(stamp):
+    return pd.Timestamp(stamp).tz_convert('Asia/Seoul').strftime('%Y.%m.%d %H:%M') if stamp else '아직 관측되지 않음'
+
+def excel_button(rows,label='검색 결과 Excel',key='excel'):
+    buffer=io.BytesIO();export_works_excel(rows,buffer)
+    st.download_button(label,buffer.getvalue(),'webtoon_radar_search.xlsx',
+                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=key)
+
+def read_list(name):
+    try:
+        value=json.loads(st.query_params.get(name,'[]'))
+        return value if isinstance(value,list) and all(isinstance(v,str) for v in value) else []
+    except (ValueError,TypeError):return []
+
+def number_param(name):
+    try:return max(0,int(st.query_params.get(name,'0')))
+    except ValueError:return 0
 
 sync=sync_public_observations()
 snapshots=load_snapshots()
-if not snapshots:
-    st.info('수집된 작품 목록이 없습니다. GitHub Actions에서 수집을 실행하세요.');st.stop()
-snapshot=snapshots[0]
-st.sidebar.title('작품 탐색')
-query=st.sidebar.text_input('작품명·작가·태그 검색',placeholder='예: 억만무림, 나노마신, 먼치킨',key='query')
-metadata=load_live_metadata()
-lookup_ids=query_title_ids(snapshot,query)
-missing=[i for i in lookup_ids if i not in metadata['webtoon'] and i not in metadata.get('unavailable',{}).get('webtoon',{})]
-if missing:
-    with st.spinner('검색한 작품의 공개 상세정보를 확인하고 있습니다…'):
-        lookup=fill_searched_titles(missing)
-    metadata=load_live_metadata()
-    if lookup['state']=='temporarily_unavailable':
-        st.info('현재 공개 정보 응답을 확인할 수 없어 저장된 자료를 표시합니다. 수집 상태는 작품별 출처에서 확인할 수 있습니다.')
+if not snapshots:st.info('작품 목록을 준비하고 있습니다.');st.stop()
+snapshot=snapshots[0];metadata=load_live_metadata()
+selected=st.query_params.get('work','')
+if selected.startswith('webtoon:'):
+    ident=selected.split(':',1)[1]
+    if ident in {r['title_id'] for r in snapshot['titles']}:
+        with st.spinner('작품의 공개 지표와 시리즈 연결을 확인하고 있습니다…'):
+            fill_searched_titles([ident])
+            lookup=fill_series_links([ident],limit=1)
+        metadata=load_live_metadata()
+        if lookup['state']=='temporarily_unavailable':st.info('공개 정보 응답이 지연되어 저장된 관측을 표시합니다.')
 works=build_works(snapshot,metadata)
-genres=st.sidebar.multiselect('장르',sorted({g for w in works for g in w['genres']}),key='genres')
-tags=st.sidebar.multiselect('관심·다운로드·댓글·공식 태그',sorted({t for w in works for t in w['tags'] if not t.startswith('장르:')}),key='tags')
-mode=st.sidebar.radio('선택한 태그 조건',['모두 포함','하나 이상 포함'],horizontal=True,key='tag_mode')
-with st.sidebar.expander('연재처·작품 상태'):
-    venues=st.multiselect('연재처',['네이버웹툰','네이버시리즈'],help='비워두면 모든 연재처를 함께 검색합니다.',key='venues')
-    status=st.multiselect('작품 상태',['연재','휴재','완결','미표시'],key='statuses')
-    group=st.selectbox('웹툰 수록 목록',['전체','월','화','수','목','금','토','일','매일+','완결목록'],key='group')
-with st.sidebar.expander('숫자로 검색'):
-    minimums={
-        'interest':st.number_input('관심 수 최소 · 웹툰',min_value=0,step=10000,value=0,key='min_interest'),
-        'downloads':st.number_input('다운로드 수 최소 · 시리즈',min_value=0,step=100000,value=0,key='min_downloads'),
-        'comments':st.number_input('댓글 수 최소 · 시리즈',min_value=0,step=1000,value=0,key='min_comments')}
-    st.caption('0은 조건을 적용하지 않습니다. 값이 없는 작품은 숫자 조건 검색에서 제외됩니다.')
-sort_options={'관심 수 높은 순':'interest','다운로드 수 높은 순':'downloads','댓글 수 높은 순':'comments','작품명 순':'title'}
-sort_label=st.sidebar.selectbox('정렬',list(sort_options),key='sort')
-if st.sidebar.button('최신 데이터 가져오기'):
-    result=sync_public_observations(force=True)
-    if result['state']=='unavailable':st.sidebar.warning('공개 저장소에 연결하지 못했습니다. 기존 자료를 유지합니다.')
-    else:st.rerun()
-st.sidebar.caption('전체 수집 결과는 자동으로 갱신됩니다. 검색한 미수집 작품은 최대 12개까지 즉시 확인합니다.')
 
-view=filter_works(works,query,tags,mode,minimums,venues)
-if genres:view=[w for w in view if set(genres)&set(w['genres'])]
-if status:view=[w for w in view if w.get('status') in status]
-if group!='전체':
-    ids={m['title_id'] for m in snapshot['memberships'] if m['group']==group}
-    view=[w for w in view if w['webtoon_id'] in ids]
-sort_key=sort_options[sort_label]
-view=sorted(view,key=lambda w:w['title'].casefold() if sort_key=='title' else (w.get(sort_key) is None,-(w.get(sort_key) or 0),w['title']))
-a,b,c,d=st.columns(4)
-a.metric('통합 작품',f'{len(works):,}')
-b.metric('웹툰·시리즈 함께 연재',f"{sum(len(w['venues'])>1 for w in works):,}")
-c.metric('현재 검색 결과',f'{len(view):,}')
-d.metric('관심 수 확인',f"{sum(w['interest'] is not None for w in works):,}")
-webtoon_ids={t['title_id'] for t in snapshot['titles']}
-known=len(webtoon_ids & metadata['webtoon'].keys())
-restricted=len((webtoon_ids & metadata.get('unavailable',{}).get('webtoon',{}).keys())-metadata['webtoon'].keys())
-st.progress((known+restricted)/len(webtoon_ids),text=f'웹툰 상세 확인 {known:,} / {len(webtoon_ids):,}개 · 공개 접근 제한 {restricted:,}개')
-if known+restricted<len(webtoon_ids):
-    st.caption('전체 상세정보를 순차 수집 중입니다. 아직 확인되지 않은 작품도 제목으로 검색하면 공개 정보를 바로 확인합니다.')
-st.caption('관심 수는 네이버웹툰, 다운로드·댓글 수는 시리즈의 공개 집계입니다. 약 표시는 축약된 원문을 환산한 값입니다. 연재처는 수집한 공개 자료 기준입니다.')
+def show_detail(work):
+    if st.button('← 검색 화면으로',key='back'):
+        del st.query_params['work'];st.rerun()
+    left,right=st.columns([1,2.8],gap='large')
+    with left:
+        if work['cover_url']:
+            st.markdown(f'<img class="radar-cover" src="{escape(work["cover_url"],quote=True)}" alt="{escape(work["title"],quote=True)} 표지" referrerpolicy="no-referrer">',unsafe_allow_html=True)
+        else:st.info('공개 표지가 아직 연결되지 않았습니다.')
+    with right:
+        st.markdown('<p class="radar-kicker">WORK INSIGHT</p>',unsafe_allow_html=True)
+        st.title(work['title'])
+        st.write(work['author'])
+        labels=[work['status'],*work['genres'],*work['venues']]
+        chips=('<span class="radar-chip new">신작</span>' if work['is_new'] else '')+''.join(f'<span class="radar-chip">{escape(x)}</span>' for x in labels)
+        st.markdown(chips,unsafe_allow_html=True)
+        if work['is_new']:st.caption('신작 기준: 네이버웹툰 공식 목록의 신작 표시 · '+korean_time(snapshot['observed_at']))
+        a,b=st.columns(2);c,d=st.columns(2)
+        a.metric('관심 수 · 웹툰',work['interest_display'])
+        b.metric('조회수 · 웹툰 공개 목록',work['views_display'])
+        c.metric('다운로드 · 시리즈',work['downloads_display'])
+        d.metric('댓글 · 시리즈',work['comments_display'])
+        links=st.columns(3)
+        if work['webtoon_url']:links[0].link_button('네이버웹툰에서 보기 ↗',work['webtoon_url'],use_container_width=True)
+        if work['series_url']:links[1].link_button('시리즈에서 보기 ↗',work['series_url'],use_container_width=True)
+        with links[2]:excel_button([work],'작품 Excel','detail_excel')
+    st.caption('관심은 네이버웹툰, 다운로드·댓글은 시리즈의 관측값입니다. 약 표시는 원문 축약값입니다. 조회수는 일부 작품의 공개 목록에만 제공되며 집계 범위는 명시되지 않았습니다.')
+    if not work['series_url']:
+        check=metadata.get('series_checks',{}).get(work['webtoon_id'],{})
+        st.info('시리즈 연결 미확인 · '+check.get('reason','공개 공통번호로 연결을 확인하지 못했습니다.')+' 미연재를 의미하지 않습니다.')
+    st.divider();st.subheader('숫자로 보는 작품의 변화')
+    st.caption('실제로 수집한 시각의 값을 연결합니다. 앞으로 매주 관측이 쌓이면 더 긴 흐름을 볼 수 있습니다.')
+    history=metric_history(work,metadata,snapshot)
+    metric_labels={'관심 수':'interest','조회수':'views','시리즈 다운로드':'downloads','시리즈 댓글':'comments'}
+    selected_metric=st.radio('변화 지표',list(metric_labels),horizontal=True,label_visibility='collapsed',key='trend_metric')
+    key=metric_labels[selected_metric];points=history[key]
+    if not points:
+        st.info(f'{selected_metric}의 공개 관측값이 아직 없습니다. 값이 확인되면 이곳에 그래프가 나타납니다.')
+    else:
+        df=pd.DataFrame(points)
+        df['관측 시각']=pd.to_datetime(df['observed_at'],utc=True).dt.tz_convert('Asia/Seoul').dt.tz_localize(None)
+        df['원문']=df.apply(lambda r:('약 ' if r['approximate'] else '')+r['display'],axis=1)
+        chart=alt.Chart(df).mark_line(point=alt.OverlayMarkDef(size=65),color='#15966f',strokeWidth=3).encode(
+            x=alt.X('관측 시각:T',title='관측 시각 · 한국시간',axis=alt.Axis(format='%m/%d %H:%M')),
+            y=alt.Y('value:Q',title=selected_metric,scale=alt.Scale(zero=False)),
+            tooltip=[alt.Tooltip('관측 시각:T',format='%Y-%m-%d %H:%M'),alt.Tooltip('원문:N'),alt.Tooltip('source_url:N',title='출처')]).properties(height=300)
+        st.altair_chart(chart,use_container_width=True)
+        if len(points)==1:st.caption('현재 관측 1회입니다. 다음 관측 전에는 증가·감소를 계산하지 않습니다.')
+        else:
+            change=points[-1]['value']-points[0]['value']
+            st.caption(f"실제 관측 {len(points)}회 · {korean_time(points[0]['observed_at'])} → {korean_time(points[-1]['observed_at'])} · 변화 {change:+,}"+(' (축약 표시값 기준)' if any(p['approximate'] for p in points) else ''))
+        if key=='views':st.caption('공개 목록의 viewCount 중 양수로 확인된 값만 기록합니다. 다수 작품의 0은 제공 여부가 불분명하여 관측 0으로 쓰지 않습니다. 조회수와 다운로드 수는 서로 다른 지표입니다.')
+        with st.expander('그래프의 관측 기록 보기'):
+            st.dataframe(df[['관측 시각','원문','source_url']].rename(columns={'source_url':'출처'}),hide_index=True,use_container_width=True)
+            st.download_button('관측 기록 CSV',df[['observed_at','value','display','approximate','source_url']].to_csv(index=False).encode('utf-8-sig'),'work_observations.csv','text/csv')
+    with st.expander('장르·태그와 연재처별 출처',expanded=True):
+        st.write(' · '.join(work['tags']) or '공개 태그 없음')
+        for source in work['sources']:
+            st.markdown(f"**{source['platform']} · {source['title']}**")
+            st.caption(f"{source.get('author','')} · {source['collection_state']} · 관측 {korean_time(source.get('observed_at'))}")
+            st.link_button('원문 확인 ↗',source['source_url'])
+        st.caption('연결 근거: '+work['link_basis']+'. 플랫폼·판본 간 수치는 합산하지 않습니다.')
+
+def show_search():
+    st.markdown('<p class="radar-kicker">FIND YOUR NEXT WEBTOON</p>',unsafe_allow_html=True)
+    st.title('어떤 웹툰을 찾고 있나요?')
+    st.markdown('<div class="radar-sub">표지로 만나고, 데이터로 살펴보세요. 같은 작품의 웹툰과 시리즈 정보를 한곳에서 확인합니다.</div>',unsafe_allow_html=True)
+    shelf_label=st.radio('작품 서가',['연재·휴재','완결 보관함'],index=1 if st.query_params.get('shelf')=='finished' else 0,horizontal=True,key='shelf',label_visibility='collapsed')
+    shelf='finished' if shelf_label=='완결 보관함' else 'ongoing'
+    pool=shelf_works(works,shelf)
+    with st.form('search',border=True):
+        a,b,c=st.columns([3,1.5,0.7],vertical_alignment='bottom')
+        query=a.text_input('작품명·태그',value=st.query_params.get('q',''),placeholder='예: 전지적 독자시점, 호랑이 형님, 신작',key='query')
+        author=b.text_input('작가',value=st.query_params.get('author',''),placeholder='작가명으로 검색',key='author')
+        submitted=c.form_submit_button('검색',type='primary',use_container_width=True)
+        a,b,c=st.columns([2,2,1])
+        all_genres=sorted({g for w in pool for g in w['genres']})
+        genres=a.multiselect('장르',all_genres,default=[g for g in read_list('genres') if g in all_genres])
+        all_tags=sorted({t for w in pool for t in w['tags'] if not t.startswith('장르:')})
+        tags=b.multiselect('태그 · 모두 포함',all_tags,default=[t for t in read_list('tags') if t in all_tags])
+        new_only=c.checkbox('신작만 보기',value=st.query_params.get('new')=='1',help='네이버웹툰이 공식 신작으로 표시한 작품입니다.')
+        with st.expander('요일·연재처·숫자 조건'):
+            d,e=st.columns(2)
+            days=['전체','월','화','수','목','금','토','일','매일+']
+            day=d.selectbox('연재 요일',days,index=days.index(st.query_params.get('day','전체')) if st.query_params.get('day','전체') in days else 0,key='day')
+            venues=e.multiselect('연재처',['네이버웹툰','네이버시리즈'],default=[v for v in read_list('venues') if v in ('네이버웹툰','네이버시리즈')],help='같은 작품은 두 연재처를 한 카드에 표시합니다.')
+            m1,m2,m3=st.columns(3)
+            minimums={'interest':m1.number_input('관심 수 이상',min_value=0,value=number_param('min_interest'),step=10000),
+                      'downloads':m2.number_input('다운로드 수 이상',min_value=0,value=number_param('min_downloads'),step=100000),
+                      'comments':m3.number_input('댓글 수 이상',min_value=0,value=number_param('min_comments'),step=1000)}
+            st.caption('0은 조건을 적용하지 않습니다. 값이 없는 작품은 숫자 조건 검색에서 제외됩니다.')
+    view=filter_works(pool,query,tags,minimums=minimums,venues=venues)
+    if author:view=[w for w in view if search_text(author) in search_text(w['author'])]
+    if genres:view=[w for w in view if set(genres)&set(w['genres'])]
+    if new_only:view=[w for w in view if w['is_new']]
+    if day!='전체':
+        ids={m['title_id'] for m in snapshot['memberships'] if m['group']==day};view=[w for w in view if w['webtoon_id'] in ids]
+    heading,sortcol=st.columns([3,1],vertical_alignment='bottom')
+    heading.subheader('완결 작품' if shelf=='finished' else ('새롭게 시작한 이야기' if new_only else '작품 둘러보기'))
+    sorts=['관심 수 높은 순','다운로드 수 높은 순','댓글 수 높은 순','작품명 순']
+    sort=sortcol.selectbox('정렬',sorts,index=sorts.index(st.query_params.get('sort',sorts[0])) if st.query_params.get('sort',sorts[0]) in sorts else 0,label_visibility='collapsed')
+    sortkey={'관심 수 높은 순':'interest','다운로드 수 높은 순':'downloads','댓글 수 높은 순':'comments','작품명 순':'title'}[sort]
+    view=sorted(view,key=lambda w:w['title'] if sortkey=='title' else (w[sortkey] is None,-(w[sortkey] or 0),w['title']))
+    context={'q':query,'author':author,'shelf':shelf,'new':'1' if new_only else '0','genres':json.dumps(genres,ensure_ascii=False),'tags':json.dumps(tags,ensure_ascii=False)}
+    context.update(day=day,venues=json.dumps(venues,ensure_ascii=False),sort=sort,**{'min_'+k:v for k,v in minimums.items()})
+    try:page=max(0,int(st.query_params.get('page','0')))
+    except ValueError:page=0
+    if submitted or st.session_state.get('filter_signature',str((context,day,venues,minimums,sort)))!=str((context,day,venues,minimums,sort)):page=0
+    st.session_state['filter_signature']=str((context,day,venues,minimums,sort))
+    pages=max(1,math.ceil(len(view)/24));page=min(page,pages-1);context['page']=page
+    st.query_params.from_dict(context)
+    st.markdown(f'<div class="radar-summary"><strong>검색 결과 {len(view):,}개</strong><strong>신작 {sum(w["is_new"] for w in pool):,}개</strong>표지를 선택하면 상세 지표와 변화 그래프가 열립니다.</div>',unsafe_allow_html=True)
+    if view:st.markdown(card_grid(view[page*24:(page+1)*24],context),unsafe_allow_html=True)
+    else:
+        st.info('현재 서가에서 조건에 맞는 작품을 찾지 못했습니다. 완결 작품은 ‘완결 보관함’에서 검색하세요.' if shelf=='ongoing' else '조건에 맞는 완결 작품이 없습니다. 제목이나 필터를 확인해 주세요.')
+    prev,position,nxt=st.columns([1,3,1])
+    if prev.button('← 이전',disabled=page==0,use_container_width=True):st.query_params['page']=page-1;st.rerun()
+    position.markdown(f'<p style="text-align:center;color:#677b70;padding-top:8px">{page+1} / {pages} 페이지</p>',unsafe_allow_html=True)
+    if nxt.button('다음 →',disabled=page>=pages-1,use_container_width=True):st.query_params['page']=page+1;st.rerun()
+    excel_button(view)
+    st.caption('신작 태그는 네이버웹툰 공식 new 표시입니다. 새 회차(UP) 또는 수집기에 처음 발견된 작품을 신작으로 바꾸지 않습니다. 표지는 공식 이미지 주소를 연결하며 이미지 파일을 보관하지 않습니다.')
+
+if selected:
+    work=next((w for w in works if w['work_id']==selected),None)
+    if work:show_detail(work)
+    else:
+        st.info('현재 목록에서 해당 작품을 찾지 못했습니다.')
+        if st.button('검색 화면 열기'):del st.query_params['work'];st.rerun()
+else:show_search()
+
+with st.expander('수집 현황과 자료 안내'):
+    known=sum(r['title_id'] in metadata['webtoon'] for r in snapshot['titles'])
+    st.write(f"네이버웹툰 {len(snapshot['titles']):,}개 · 상세 확인 {known:,}개 · 시리즈 공개 작품 {len(metadata['series']):,}개")
+    st.caption('목록 관측 '+korean_time(snapshot['observed_at'])+' · 매주 월요일 09:17 자동 실행')
+    st.caption('시리즈는 홈·일간 TOP100 및 공개 공통 작품번호로 발견합니다. 상세 화면을 열 때 연결을 확인하고, 주간 실행마다 최대 200개를 추가 확인합니다. 시리즈 전체 카탈로그를 확보했다는 뜻은 아닙니다.')
+    st.caption('과거 값은 실제 관측만 보존합니다. 관심·조회수·다운로드는 서로 다른 지표이며 합산하지 않습니다. 자료 없음은 0이나 미연재를 뜻하지 않습니다.')
+    st.link_button('GitHub 저장소와 실행 기록 ↗','https://github.com/imfucgingsaxmaster/webtoon-survey')
+    if st.button('최신 공개 데이터 가져오기'):
+        result=sync_public_observations(force=True)
+        if result['state']=='unavailable':st.warning('공개 저장소 연결이 지연되어 기존 자료를 유지합니다.')
+        else:st.rerun()
+    previous=snapshots[1] if len(snapshots)>1 else None
+    changes=compare(snapshot,previous)
+    if not changes['baseline']:st.caption(f"이전 목록 대비 진입 {len(changes['added'])}개 · 이탈 {len(changes['removed'])}개. 신작·서비스 종료와는 다른 기준입니다.")
+    pdf=ROOT/'outputs'/'summary.pdf'
+    if pdf.exists():st.download_button('수집 요약 PDF',pdf.read_bytes(),'summary.pdf','application/pdf')
+st.caption('Webtoon Radar · 공개 작품 메타데이터 분석 · 표지와 작품의 권리는 각 권리자에게 있습니다.')
 
 @st.fragment(run_every='60s')
 def refresh_status():
     result=sync_public_observations()
     if result.get('updated'):st.rerun(scope='app')
-    if result.get('state')=='unavailable':st.caption('저장소 연결이 지연되어 보관된 자료를 표시하고 있습니다.')
-    else:st.caption('공개 저장소의 새 수집 결과를 5분 간격으로 확인합니다.')
+    if result.get('state')=='unavailable':st.caption('저장소 연결 지연 · 보관된 자료 표시 중')
 refresh_status()
-
-search_tab,coverage_tab=st.tabs(['작품·태그 검색','수집 범위·주간 변화'])
-with search_tab:
-    st.subheader('검색 결과')
-    if not view:st.info('선택한 조건에 맞는 작품이 없습니다. 태그나 최소값 조건을 줄여 보세요.')
-    else:
-        display=[{'작품명':w['title'],'연재처':' / '.join(w['venues']),'장르':', '.join(w['genres']),
-                  '관심 수 · 웹툰':w['interest_display'],'다운로드 · 시리즈':w['downloads_display'],'댓글 · 시리즈':w['comments_display'],
-                  '검색 태그':' · '.join(w['tags']),'확인 상태':w['collection_state'],'작가':w['author'],
-                  '웹툰':w['webtoon_url'] or None,'시리즈':w['series_url'] or None} for w in view]
-        st.dataframe(pd.DataFrame(display),hide_index=True,width='stretch',height=min(500,76+len(view)*35),
-                     column_config={'웹툰':st.column_config.LinkColumn('웹툰',display_text='작품 페이지'),
-                                    '시리즈':st.column_config.LinkColumn('시리즈',display_text='작품 페이지'),
-                                    '연재처':st.column_config.TextColumn(width='medium'),
-                                    '검색 태그':st.column_config.TextColumn(width='large')})
-        if len(view)<=10:
-            for w in view:
-                with st.expander(f"{w['title']} · 연재처별 출처와 관측 시각",expanded=len(view)==1):
-                    st.write(f"관심 {w['interest_display']} · 다운로드 {w['downloads_display']} · 댓글 {w['comments_display']}")
-                    st.write('장르: '+(', '.join(w['genres']) or '공개 정보 확인 중'))
-                    st.write(' · '.join(w['tags']) or '공개 태그 없음')
-                    for source in w['sources']:
-                        st.markdown(f"**{source['platform']} · {source['title']}**")
-                        st.caption(f"{source['collection_state']} · 관측 UTC: {source.get('observed_at') or '아직 관측되지 않음'} · 작가: {source.get('author','')}")
-                        values=[]
-                        for key,label in [('interest','관심'),('downloads','다운로드'),('comments','댓글')]:
-                            if source['metrics'][key]['value'] is not None:values.append(f"{label} {source[key+'_display']}")
-                        if values:st.write(' / '.join(values))
-                        st.link_button(source['platform']+' 작품 페이지',source['source_url'])
-                    if len(w['sources'])>1:st.caption('연결 근거: '+w['link_basis']+'. 판본이 여러 개면 시리즈 연재판을 우선 표시하며, 수치를 합산하지 않습니다.')
-    st.caption('같은 제목과 작가를 대조해 통합합니다. 동명 작품이나 연결 근거가 부족한 작품은 별도로 유지합니다. 값이 없는 항목은 0으로 처리하지 않습니다.')
-    buffer=io.BytesIO();export_works_excel(view,buffer)
-    st.download_button('통합 검색 결과 Excel 내려받기',buffer.getvalue(),'webtoon_radar_search.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-with coverage_tab:
-    st.info(f"시리즈는 공개 만화 홈·일간 TOP100·이전 발견 작품 {len(metadata['series']):,}개의 범위입니다. 자동 접근이 제한된 전체 분류 목록은 수집하지 않습니다.")
-    st.caption(f"웹툰 목록 관측 {snapshot['observed_at']} · 상세정보 마지막 저장 {metadata.get('updated_at','')} (UTC)")
-    selected=st.selectbox('목록 관측 시각 (UTC)',range(len(snapshots)),format_func=lambda i:snapshots[i]['observed_at'])
-    historical=snapshots[selected];previous=snapshots[selected+1] if selected+1<len(snapshots) else None
-    changes=compare(historical,previous)
-    if changes['baseline']:st.info('첫 목록 관측입니다. 이후 관측이 누적되면 진입·이탈과 목록 위치 변화를 비교합니다.')
-    else:st.success(f"이전 관측 대비 목록 진입 {len(changes['added'])}개 · 목록 이탈 {len(changes['removed'])}개. 신작·서비스 종료를 의미하지 않습니다.")
-    left,right=st.columns(2)
-    with left:st.bar_chart(pd.DataFrame(historical['coverage']).set_index('group')['items'],color='#168a82',height=230)
-    with right:st.bar_chart(pd.Series([r['status'] for r in historical['titles']]).value_counts(),color='#366a97',height=230)
-    st.dataframe(pd.DataFrame(historical['coverage']),hide_index=True)
-    st.write('제외: '+', '.join(historical['exclusions']))
-    for name,run in metadata.get('runs',{}).items():
-        st.write(('네이버웹툰' if name=='webtoon' else '네이버시리즈')+' 마지막 게시 수집: '+{'complete':'완료','partial':'일부 완료','running':'진행 중','stopped':'중단'}.get(run.get('state'),'대기'))
-        if run.get('unavailable'):st.caption(f"공개 접근을 확인할 수 없어 제외: {run['unavailable']:,}개. 로그인·연령 확인으로 진행하지 않습니다.")
-        for error in run.get('errors',[]):st.warning(error)
-    st.caption('과거 관측 선택은 목록·위치 비교에 적용됩니다. 통합 검색은 작품별 최신 상세정보를 사용합니다. 출처별 관측 시각은 검색 결과의 상세 영역과 Excel에서 확인할 수 있습니다.')
-    buffer=io.BytesIO();export_excel(historical,buffer,changes,metadata)
-    st.download_button('전체 웹툰 목록 Excel 내려받기',buffer.getvalue(),'webtoon_catalogue.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    pdf=ROOT/'outputs'/'summary.pdf'
-    if selected==0 and pdf.exists():st.download_button('요약 보고서 PDF',pdf.read_bytes(),'summary.pdf','application/pdf')
-st.caption('첨부 조사 PDF는 과제 보고서의 참고·증거 자료입니다. 검색 데이터는 네이버의 공개 작품 정보에서 수집합니다.')
-

@@ -65,7 +65,7 @@ class WorkTests(unittest.TestCase):
         self.assertEqual(row['interest_display'],'0')
         pending=next(w for w in result if w['webtoon_id']=='2')
         self.assertEqual(pending['interest_display'],'상세 수집 중')
-        self.assertEqual(pending['downloads_display'],'시리즈 자료 없음')
+        self.assertEqual(pending['downloads_display'],'시리즈 연결 미확인')
         self.cache['webtoon']['1']=fixtures.MetadataTests().webtoon(count=None)
         row=next(w for w in works.build_works(self.snapshot,self.cache) if w['webtoon_id']=='1')
         self.assertEqual(row['interest_display'],'미제공')

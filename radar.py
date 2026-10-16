@@ -30,14 +30,25 @@ ALLOWED = {'/api/webtoon/titlelist/weekday', '/api/webtoon/titlelist/finished', 
 def utcnow():
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
+def public_cover_url(value):
+    """Keep only official HTTPS image references; never download cover binaries."""
+    if not isinstance(value,str):return ''
+    parsed=urllib.parse.urlsplit(value)
+    if parsed.scheme=='https' and parsed.hostname and parsed.hostname.endswith('.pstatic.net') and not parsed.username and not parsed.password:
+        return value
+    return ''
+
 
 class PublicRedirect(PermissionError):
     """A title left the allowlisted public endpoint, often to require login."""
+    def __init__(self, message, target=''):
+        super().__init__(message)
+        self.target = target
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,req,fp,code,msg,headers,newurl):
-        raise PublicRedirect('Redirect blocked; public title metadata unavailable')
+        raise PublicRedirect('Redirect blocked; public title metadata unavailable', newurl)
 
 
 class PublicClient:
@@ -86,9 +97,16 @@ def normalize(item):
     if not isinstance(ident, int) or ident < 1 or not isinstance(title, str) or not title.strip():
         raise ValueError('Missing stable title ID or title name')
     score = item.get('starScore')
+    raw_views=item.get('viewCount')
+    # Most official rows use zero without displaying a count. Do not call this
+    # a measured zero or infer lifetime reach from an undocumented scope.
+    public_views=raw_views if type(raw_views) is int and raw_views>0 else None
     if score is not None and (isinstance(score, bool) or not isinstance(score, (int,float)) or not 0 <= score <= 10):
         raise ValueError('Invalid public rating')
     return {'platform':'네이버웹툰', 'title_id':str(ident), 'title':title.strip(),
+            'cover_url':public_cover_url(item.get('thumbnailUrl')),
+            'public_views':public_views,
+            'is_new':item.get('new') is True,'new_basis':'네이버웹툰 공식 신작 표시' if item.get('new') is True else '',
             'author':str(item.get('author') or ''), 'rating':score,
             'status':'완결' if item.get('finish') else ('휴재' if item.get('rest') else '연재'),
             'url':f'{BASE}/webtoon/list?titleId={ident}'}

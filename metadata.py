@@ -1,7 +1,7 @@
 """Public title-page metrics, with provenance and resumable, paced collection.
 
 Webtoon interest counts belong to Webtoon IDs. Series downloads/comments belong
-to Series product IDs. Names never join the two platforms. No comment text,
+to Series product IDs. Linking retains each platform's identity. No comment text,
 episode content, login cookies or private favorite state is retained.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from pathlib import Path
 from bs4 import BeautifulSoup
-from radar import ROOT, BASE, UA, PublicClient, PublicRedirect, flattened, utcnow
+from radar import ROOT, BASE, UA, PublicClient, PublicRedirect, flattened, utcnow, public_cover_url
 
 SERIES = 'https://series.naver.com'
 METRICS = {'interest':'관심', 'downloads':'다운로드', 'comments':'댓글'}
@@ -48,6 +48,9 @@ def parse_webtoon(data, title_id, observed_at=None):
     count = data.get('favoriteCount')
     if count is not None and (type(count) is not int or count < 0):
         raise ValueError('Invalid public favoriteCount')
+    contents_no=data.get('contentsNo')
+    if contents_no is not None and (type(contents_no) is not int or contents_no < 0):
+        raise ValueError('Invalid public contentsNo')
     tags = data.get('curationTagList')
     if tags is None: tags=[]
     if not isinstance(tags,list) or any(not isinstance(t,dict) or not isinstance(t.get('tagName'),str) for t in tags):
@@ -55,6 +58,8 @@ def parse_webtoon(data, title_id, observed_at=None):
     metrics=empty_metrics()
     metrics['interest']={'value':count,'display':f'{count:,}' if count is not None else '', 'approximate':False}
     return {'platform':'네이버웹툰','title_id':str(title_id),'title':data['titleName'],
+            'contents_no':str(contents_no) if contents_no else None,
+            'cover_url':public_cover_url(data.get('thumbnailUrl')),
             'genres':sorted({t['tagName'] for t in tags if str(t.get('curationType','')).startswith('GENRE_')}),
             'official_tags':sorted({t['tagName'] for t in tags}), 'metrics':metrics,
             'source_url':f'{BASE}/webtoon/list?titleId={title_id}',
@@ -65,7 +70,7 @@ def parse_series(html, title_id, observed_at=None):
     soup=BeautifulSoup(html,'html.parser')
     heading=soup.select_one('#content .end_head h2')
     share=soup.select_one('#spiButton2[data-url]')
-    if not heading or not share or urllib.parse.parse_qs(urllib.parse.urlsplit(share['data-url']).query).get('productNo') != [str(title_id)]:
+    if not heading or not share or series_product_id(share['data-url']) != str(title_id):
         raise ValueError('Series product identity or public detail heading missing')
     metrics=empty_metrics()
     for field,selector in [('downloads','.end_head .btn_download span'),('comments','.end_head #commentCount')]:
@@ -83,7 +88,9 @@ def parse_series(html, title_id, observed_at=None):
     score=soup.select_one('.end_head .score_area em')
     rating=float(score.get_text(strip=True)) if score else None
     if rating is not None and not 0 <= rating <= 10: raise ValueError('Invalid public rating')
+    cover=soup.select_one('meta[property="og:image"]')
     return {'platform':'네이버시리즈','title_id':str(title_id),'title':heading.get_text(' ',strip=True),
+            'cover_url':public_cover_url(cover.get('content')) if cover else '',
             'author':' / '.join(dict.fromkeys(authors)),'status':status,'rating':rating,
             'genres':genres,'official_tags':[], 'metrics':metrics,
             'source_url':f'{SERIES}/comic/detail.series?productNo={title_id}',
@@ -101,6 +108,37 @@ class SeriesClient(PublicClient):
         raw=self._read(url)
         if len(raw)>12_000_000: raise ValueError('Unexpectedly large response')
         return raw.decode('utf-8')
+
+    def resolve_original(self,contents_no):
+        """Resolve one public content ID, allowing only one canonical comic redirect."""
+        if not str(contents_no).isdecimal() or int(contents_no)<1:
+            raise ValueError('Invalid public content identity')
+        resolution_url=f'{SERIES}/comic/detail.series?originalProductId={contents_no}'
+        product_id=None
+        try:
+            html=self.html('/comic/detail.series',originalProductId=contents_no)
+        except PublicRedirect as exc:
+            # Never follow login, age, novel, arbitrary host, or redirect chains.
+            product_id=series_product_id(urllib.parse.urljoin(resolution_url,exc.target)) if exc.target else None
+            if not product_id:raise
+            html=self.html('/comic/detail.series',productNo=product_id)
+        soup=BeautifulSoup(html,'html.parser')
+        share=soup.select_one('#spiButton2[data-url]')
+        ident=series_product_id(share['data-url']) if share else None
+        if not ident or (product_id and ident!=product_id):
+            raise ValueError('Resolved Series identity mismatch')
+        row=parse_series(html,ident)
+        row.update(original_product_id=str(contents_no),resolution_url=resolution_url,resolved_at=utcnow())
+        return row
+
+def series_product_id(url):
+    """Strict public canonical comic identity; not a general redirect permission."""
+    parsed=urllib.parse.urlsplit(url)
+    query=urllib.parse.parse_qs(parsed.query,keep_blank_values=True)
+    if (parsed.scheme!='https' or parsed.netloc!='series.naver.com' or
+        parsed.path!='/comic/detail.series' or parsed.fragment or set(query)!={'productNo'}):return None
+    values=query['productNo']
+    return values[0] if len(values)==1 and values[0].isdecimal() and int(values[0])>0 else None
 
 def series_discovery(client):
     """Follow only links shown on allowed home / daily TOP100 pages."""
@@ -169,7 +207,10 @@ def collect_metadata(root=ROOT,webtoon_limit=None,series_limit=None,fresh_hours=
                 run['requests']+=1
                 try:
                     if platform=='webtoon': record=parse_webtoon(client.get('/api/article/list/info',titleId=ident),ident)
-                    else: record=parse_series(client.html('/comic/detail.series',productNo=ident),ident)
+                    else:
+                        record=parse_series(client.html('/comic/detail.series',productNo=ident),ident)
+                        for key in ('original_product_id','resolution_url','resolved_at'):
+                            if key in cache[platform].get(ident,{}):record[key]=cache[platform][ident][key]
                 except PublicRedirect:
                     unavailable[platform][ident]={'observed_at':utcnow(),'reason':'공개 작품 정보 외 경로로 이동 요청: 로그인·연령 확인 등을 진행하지 않고 제외'}
                     continue
@@ -213,7 +254,7 @@ def build_rows(snapshot,metadata):
     rows=[]
     for item in flattened(snapshot):
         detail=metadata.get('webtoon',{}).get(item['title_id'],{})
-        rows.append(dict(item,**{k:detail.get(k,default) for k,default in [('genres',[]),('official_tags',[]),('metrics',empty_metrics()),('observed_at',''),('source_url',item['url'])]}))
+        rows.append(dict(item,**{k:detail.get(k,default) for k,default in [('contents_no',None),('genres',[]),('official_tags',[]),('metrics',empty_metrics()),('observed_at',''),('source_url',item['url'])]}))
     for item in metadata.get('series',{}).values():
         rows.append(dict(item,url=item['source_url'],groups='공개 홈·일간 TOP100·이전 발견'))
     for row in rows:

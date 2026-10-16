@@ -11,6 +11,10 @@ FORMAT_LABELS={'독점','단행본','컬러연재','연재','완결','네이버�
 def normalized(text):
     return ''.join(c for c in unicodedata.normalize('NFKC',str(text)).casefold() if c.isalnum())
 
+def search_text(text):
+    # Keep punctuation literal, while ignoring spacing and Unicode width.
+    return re.sub(r'\s+','',unicodedata.normalize('NFKC',str(text)).casefold())
+
 def base_title(title):
     def keep(match):
         return '' if match.group(1).strip() in FORMAT_LABELS else match.group(0)
@@ -38,7 +42,12 @@ def build_works(snapshot,metadata):
     for row in webtoons:index[normalized(base_title(row['title']))].append(row)
     unmatched=[]
     for row in series:
-        candidates=[w for w in index[normalized(base_title(row['title']))] if same_creators(w,row)]
+        by_title=index[normalized(base_title(row['title']))]
+        linked=[w for w in by_title if w.get('contents_no') and
+                w['contents_no']==row.get('original_product_id') and
+                row.get('resolution_url')==f"https://series.naver.com/comic/detail.series?originalProductId={w['contents_no']}"]
+        candidates=linked or [w for w in by_title if same_creators(w,row)]
+        row['link_basis']='공개 공통 작품번호·제목 확인' if linked else '제목 정규화·작가 일치'
         if len(candidates)==1:groups[f"webtoon:{candidates[0]['title_id']}"].append(row)
         else:
             row['link_review']='동명·작가 일치 후보가 여러 개여서 별도 표시' if len(candidates)>1 else ''
@@ -80,16 +89,22 @@ def build_works(snapshot,metadata):
               'official_tags':sorted({t for r in sources for t in r.get('official_tags',[])}),
               'metrics':metrics,'metric_sources':provenance,
               'webtoon_id':webtoon['title_id'] if webtoon else '',
+              'cover_url':primary.get('cover_url','') or next((r.get('cover_url') for r in sources if r.get('cover_url')),''),
+              'is_new':bool(webtoon and webtoon.get('is_new')),
+              'new_basis':webtoon.get('new_basis','') if webtoon else '',
+              'views':webtoon.get('public_views') if webtoon else None,
               'webtoon_url':webtoon['source_url'] if webtoon else '',
               'series_url':serial['source_url'] if serial else '',
-              'link_basis':'제목 정규화·작가 일치' if len(sources)>1 else '단일 연재처',
+              'link_basis':' / '.join(dict.fromkeys(r.get('link_basis','제목 정규화·작가 일치') for r in sources if r['platform']=='네이버시리즈')) if len(sources)>1 else '단일 연재처',
               'collection_state':'확인 완료' if all(s=='확인 완료' for s in source_states) else ('공개 접근 제한' if '공개 접근 제한' in source_states else '상세 수집 중')}
         work['tags']=search_tags(work)
+        if work['is_new']:work['tags'].insert(0,'신작')
+        work['views_display']=f"{work['views']:,}" if work['views'] is not None else '미제공'
         for key,metric in metrics.items():
             work[key]=metric['value']
             if metric['value'] is not None:
                 label=('약 ' if metric.get('approximate') else '')+metric['display']
-            elif key not in provenance:label='웹툰 자료 없음' if key=='interest' else '시리즈 자료 없음'
+            elif key not in provenance:label='웹툰 연결 미확인' if key=='interest' else '시리즈 연결 미확인'
             else:
                 src=webtoon if key=='interest' else serial
                 label='미제공' if src.get('observed_at') else src['collection_state']
@@ -98,24 +113,24 @@ def build_works(snapshot,metadata):
     return sorted(works,key=lambda r:(normalized(r['title']),r['work_id']))
 
 def filter_works(works,query='',tags=(),mode='모두 포함',minimums=None,venues=()):
-    wanted=set(tags);query=query.strip().casefold();selected=set(venues)
+    wanted=set(tags);query=search_text(query);selected=set(venues)
     result=[]
     for work in works:
         if selected and not selected & set(work['venues']):continue
         if wanted and not (wanted<=set(work['tags']) if mode=='모두 포함' else bool(wanted & set(work['tags']))):continue
-        haystack=' '.join([work['title'],work.get('author',''),*work['aliases'],*work['tags']]).casefold()
-        if query and query not in haystack:continue
+        fields=[work['title'],work.get('author',''),*work['aliases'],*work['tags']]
+        if query and not any(query in search_text(field) for field in fields):continue
         if any(work[k] is None or work[k]<v for k,v in (minimums or {}).items() if v>0):continue
         result.append(work)
     return result
 
 def query_title_ids(snapshot,query,limit=12):
     """Only a title/creator query can trigger a bounded public detail lookup."""
-    query=query.strip().casefold()
+    query=search_text(query)
     if not query:return []
-    found=[r for r in snapshot['titles'] if r['title'].casefold()==query or
-           (len(query)>=2 and query in (r['title']+' '+r['author']).casefold())]
-    found.sort(key=lambda r:(r['title'].casefold()!=query,len(r['title']),int(r['title_id'])))
+    found=[r for r in snapshot['titles'] if search_text(r['title'])==query or
+           (len(query)>=2 and any(query in search_text(r[k]) for k in ('title','author')))]
+    found.sort(key=lambda r:(search_text(r['title'])!=query,len(r['title']),int(r['title_id'])))
     return [r['title_id'] for r in found[:limit]]
 
 def export_works_excel(works,path):
@@ -123,21 +138,21 @@ def export_works_excel(works,path):
     from openpyxl.styles import Font, PatternFill
     wb=Workbook();ws=wb.active;ws.title='작품 통합 검색'
     ws.append(['작품 ID','작품명','연재처','작가','장르','관심 수(웹툰)','다운로드 수(시리즈)','댓글 수(시리즈)',
-               '관심 원문','다운로드 원문','댓글 원문','검색 태그','확인 상태','웹툰 링크','시리즈 링크','연결 근거'])
+               '관심 원문','다운로드 원문','댓글 원문','검색 태그','확인 상태','웹툰 링크','시리즈 링크','연결 근거','조회수 공개목록 값','신작','신작 근거'])
     detail=wb.create_sheet('연재처별 원자료')
-    detail.append(['통합 작품 ID','연재처','원본 작품 ID','작품명·판본','작가','장르','관심 수','다운로드 수','댓글 수','관측 UTC','출처'])
+    detail.append(['통합 작품 ID','연재처','원본 작품 ID','작품명·판본','작가','장르','관심 수','다운로드 수','댓글 수','관측 UTC','출처','공통 작품번호','공식 연결 확인 URL'])
     for w in works:
         ws.append([w['work_id'],w['title'],' / '.join(w['venues']),w['author'],', '.join(w['genres']),
                    w['interest'],w['downloads'],w['comments'],w['interest_display'],w['downloads_display'],w['comments_display'],
-                   ', '.join(w['tags']),w['collection_state'],w['webtoon_url'],w['series_url'],w['link_basis']])
+                   ', '.join(w['tags']),w['collection_state'],w['webtoon_url'],w['series_url'],w['link_basis'],w.get('views'),'신작' if w.get('is_new') else '',w.get('new_basis','')])
         for s in w['sources']:
             detail.append([w['work_id'],s['platform'],s['title_id'],s['title'],s.get('author',''),', '.join(s.get('genres',[])),
-                           *[s['metrics'][k]['value'] for k in ('interest','downloads','comments')],s.get('observed_at',''),s['source_url']])
+                           *[s['metrics'][k]['value'] for k in ('interest','downloads','comments')],s.get('observed_at',''),s['source_url'],s.get('contents_no') or s.get('original_product_id'),s.get('resolution_url','')])
     note=wb.create_sheet('지표 안내')
-    for line in ['동일 제목에 작가가 모두 일치하거나 2명 이상 일치하는 경우에만 통합합니다. 후보가 여러 작품이면 별도 표시합니다.',
+    for line in ['공개 공통 작품번호와 제목으로 확인하거나, 동일 제목에 작가가 모두 또는 2명 이상 일치할 때 통합합니다. 동명 후보가 여러 개면 별도로 표시합니다.',
                  '관심은 웹툰, 다운로드·댓글은 시리즈 대표 연재판의 값입니다. 서로 다른 플랫폼·판본의 수치는 합산하지 않습니다.',
                  '시리즈에 여러 판본이 있으면 연재판을 우선하며, 모든 판본의 원자료와 출처는 별도 시트에 보존합니다.',
-                 '빈 숫자는 연재처 자료 없음·미제공·수집 중·공개 접근 제한이며 0이 아닙니다. 자료 없음은 해당 플랫폼에 미연재라는 뜻이 아닙니다.',
+                 '빈 숫자는 연재처 연결 미확인·미제공·수집 중·공개 접근 제한이며 0이 아닙니다. 연결 미확인은 해당 플랫폼에 미연재라는 뜻이 아닙니다.',
                  '만·억 등 축약된 원문은 근삿값입니다. 태그·최소값 검색도 표시값 환산 기준입니다.']:
         note.append([line])
     for sheet in wb:

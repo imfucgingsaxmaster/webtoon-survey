@@ -5,11 +5,13 @@ import json
 import os
 import threading
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from radar import ROOT, PublicClient, PublicRedirect, NoRedirect, utcnow, validate_snapshot
-from metadata import load_metadata, parse_webtoon
+from metadata import load_metadata, parse_webtoon, SeriesClient
+from trends import archive_observation
 
 REPOSITORY='imfucgingsaxmaster/webtoon-survey'
 _lock=threading.RLock()
@@ -38,12 +40,19 @@ def checked_metadata(value):
     return value
 
 def merge_metadata(*values):
-    result={'schema_version':1,'webtoon':{},'series':{},'unavailable':{'webtoon':{},'series':{}},'runs':{}}
+    result={'schema_version':1,'webtoon':{},'series':{},'series_checks':{},'unavailable':{'webtoon':{},'series':{}},'runs':{}}
     for value in values:
         for platform in ('webtoon','series'):
             for ident,row in value.get(platform,{}).items():
                 old=result[platform].get(ident)
-                if not old or row['observed_at']>old['observed_at']:result[platform][ident]=copy.deepcopy(row)
+                if not old or row['observed_at']>old['observed_at']:
+                    result[platform][ident]=copy.deepcopy(row)
+                    if platform=='series' and old:
+                        for key in ('original_product_id','resolution_url','resolved_at'):
+                            if key not in row and key in old:result[platform][ident][key]=old[key]
+                elif platform=='series' and row.get('resolved_at','')>old.get('resolved_at',''):
+                    for key in ('original_product_id','resolution_url','resolved_at'):
+                        if key in row:result[platform][ident][key]=row[key]
             for ident,row in value.get('unavailable',{}).get(platform,{}).items():
                 old=result['unavailable'][platform].get(ident)
                 if not old or row['observed_at']>old['observed_at']:result['unavailable'][platform][ident]=copy.deepcopy(row)
@@ -52,6 +61,9 @@ def merge_metadata(*values):
         for key,run in value.get('runs',{}).items():
             old=result['runs'].get(key,{})
             if run.get('started_at','')>=old.get('started_at',''):result['runs'][key]=copy.deepcopy(run)
+        for ident,check in value.get('series_checks',{}).items():
+            if check.get('observed_at','')>=result['series_checks'].get(ident,{}).get('observed_at',''):
+                result['series_checks'][ident]=copy.deepcopy(check)
     for platform in ('webtoon','series'):
         for ident,blocked in list(result['unavailable'][platform].items()):
             if result[platform].get(ident,{}).get('observed_at','')>=blocked['observed_at']:
@@ -123,6 +135,7 @@ def fill_searched_titles(title_ids,root=ROOT,client_factory=PublicClient):
                 except PublicRedirect:
                     cache['unavailable']['webtoon'][ident]={'observed_at':utcnow(),'reason':'공개 접근 제한: 다른 경로로 이동하지 않음'}
                     continue
+                archive_observation(root,'webtoon',row)
                 cache['webtoon'][ident]=row;fetched+=1
                 cache['updated_at']=utcnow();write_json(cache_path,cache)
             cache['updated_at']=utcnow();write_json(cache_path,cache)
@@ -132,4 +145,72 @@ def fill_searched_titles(title_ids,root=ROOT,client_factory=PublicClient):
             cache['last_error']=f'{type(exc).__name__}: {str(exc)[:200]}'
             write_json(cache_path,cache)
             return {'fetched':fetched,'state':'temporarily_unavailable'}
+        finally:_last_lookup=time.monotonic()
+
+def fill_series_links(title_ids,root=ROOT,limit=3,webtoon_factory=PublicClient,series_factory=SeriesClient):
+    """Use public contentsNo -> canonical comic resolution, never Series search.
+
+    Every successful observation and outcome is checkpointed. Unresolved links
+    are retried after six days; service failures stop with a one-hour cooldown.
+    """
+    from works import base_title, normalized
+    global _last_lookup
+    if os.environ.get('WEBTOON_RADAR_OFFLINE')=='1':return {'fetched':0,'checked':0,'state':'offline'}
+    root=Path(root);cache_path=root/'.radar_cache'/'details.json'
+    with _lock:
+        cache=read_json(cache_path,{'schema_version':1,'webtoon':{},'series':{},'unavailable':{'webtoon':{},'series':{}}})
+        cache.setdefault('series_checks',{})
+        merged=load_live_metadata(root)
+        catalogue={r['title_id']:r for r in read_json(root/'catalog_latest.json',{})['titles']}
+        now=datetime.now(timezone.utc)
+        def due(ident):
+            check=merged['series_checks'].get(ident,{})
+            if not check:return True
+            if check.get('state')=='linked' and check.get('series_id') not in merged['series']:return True
+            return (now-datetime.fromisoformat(check['observed_at'])).total_seconds()>=144*3600
+        ids=[str(i) for i in dict.fromkeys(title_ids) if str(i) in catalogue and due(str(i))][:limit]
+        if not ids:return {'fetched':0,'checked':0,'state':'ready'}
+        if time.time()<cache.get('series_retry_after',0):return {'fetched':0,'checked':0,'state':'temporarily_unavailable'}
+        fetched=checked=0;webtoon_client=series_client=None
+        try:
+            time.sleep(max(0,1.2-(time.monotonic()-_last_lookup)))
+            for ident in ids:
+                detail=merged['webtoon'].get(ident,{})
+                check={'observed_at':utcnow(),'state':'unresolved'}
+                try:
+                    # Migrate old observations that discarded the public content ID.
+                    if 'contents_no' not in detail:
+                        if webtoon_client is None:webtoon_client=webtoon_factory()
+                        detail=parse_webtoon(webtoon_client.get('/api/article/list/info',titleId=ident),ident)
+                        archive_observation(root,'webtoon',merged['webtoon'].get(ident,{}))
+                        archive_observation(root,'webtoon',detail)
+                        cache['webtoon'][ident]=detail
+                        write_json(cache_path,cache)
+                    contents_no=detail.get('contents_no')
+                    check['contents_no']=contents_no
+                    if contents_no:
+                        if series_client is None:series_client=series_factory()
+                        row=series_client.resolve_original(contents_no)
+                        if normalized(base_title(row['title']))!=normalized(base_title(catalogue[ident]['title'])):
+                            check.update(state='title_mismatch',reason='공통번호 응답의 제목이 달라 자동 연결하지 않음')
+                        else:
+                            archive_observation(root,'series',merged['series'].get(row['title_id'],{}))
+                            archive_observation(root,'series',row)
+                            cache['series'][row['title_id']]=row
+                            check.update(state='linked',series_id=row['title_id'],resolution_url=row['resolution_url'])
+                            fetched+=1
+                    else:check.update(state='no_identity',reason='공개 웹툰 정보에 공통 작품번호가 없음')
+                except PublicRedirect:
+                    check.update(state='public_unavailable',reason='공개 만화 작품 주소 이외로 이동 요청: 진행하지 않음')
+                except urllib.error.HTTPError as exc:
+                    if exc.code not in (404,410):raise
+                    check.update(state='public_unavailable',reason='공개 연결 페이지를 확인할 수 없음')
+                checked+=1;cache['series_checks'][ident]=check
+                cache['updated_at']=utcnow();write_json(cache_path,cache)
+            return {'fetched':fetched,'checked':checked,'state':'ready'}
+        except Exception as exc:
+            cache['series_retry_after']=time.time()+3600
+            cache['series_last_error']=f'{type(exc).__name__}: {str(exc)[:200]}'
+            write_json(cache_path,cache)
+            return {'fetched':fetched,'checked':checked,'state':'temporarily_unavailable'}
         finally:_last_lookup=time.monotonic()
