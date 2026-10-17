@@ -92,6 +92,32 @@ class WorkTests(unittest.TestCase):
         self.assertEqual(works.creators('운(雲) / 배민기'),works.creators('운 / 배민기'))
         self.assertNotEqual(works.creators('삼돌'),works.creators('삼둘'))
 
+    def test_verified_title_variant_needs_identity_and_creators_and_preserves_seasons(self):
+        self.snapshot['titles'][0]['title']='같은 제목 시즌1'
+        self.snapshot['titles'][1].update(title='같은 제목 시즌2',author='글작가 / 그림작가')
+        self.cache['webtoon']['1']['contents_no']='77'
+        self.cache['series']['1'].update(verified_webtoon_title='같은 제목 시즌1',
+            original_product_id='77',resolution_url='https://series.naver.com/comic/detail.series?originalProductId=77')
+        row=next(w for w in works.build_works(self.snapshot,self.cache) if w['webtoon_id']=='1')
+        self.assertEqual(row['downloads'],286830000)
+        self.assertEqual(row['aliases'],['같은 제목 시즌1','같은 제목'])
+        other=next(w for w in works.build_works(self.snapshot,self.cache) if w['webtoon_id']=='2')
+        self.assertIsNone(other['downloads'])
+        for changes in ({'original_product_id':'78'}, {'author':'다른 작가'},
+                        {'resolution_url':'https://example.com/unverified'}):
+            cache=copy.deepcopy(self.cache);cache['series']['1'].update(changes)
+            row=next(w for w in works.build_works(self.snapshot,cache) if w['webtoon_id']=='1')
+            self.assertIsNone(row['downloads'])
+
+    def test_later_refresh_failure_keeps_observed_counts_and_their_original_date(self):
+        stamp=self.cache['series']['1']['observed_at']
+        self.cache['unavailable']={'series':{'1':{'observed_at':'2099-01-01T00:00:00+00:00'}}}
+        row=next(w for w in works.build_works(self.snapshot,self.cache) if w['webtoon_id']=='1')
+        self.assertEqual(row['downloads'],286830000)
+        self.assertEqual(row['collection_state'],'기존 관측값')
+        self.assertEqual(row['metric_sources']['downloads']['observed_at'],stamp)
+        self.assertNotEqual(row['downloads_display'],'공개 접근 제한')
+
 class LiveDataTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)

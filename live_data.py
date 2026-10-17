@@ -49,10 +49,10 @@ def merge_metadata(*values):
                 if not old or row['observed_at']>old['observed_at']:
                     result[platform][ident]=copy.deepcopy(row)
                     if platform=='series' and old:
-                        for key in ('original_product_id','resolution_url','resolved_at'):
+                        for key in ('original_product_id','resolution_url','resolved_at','verified_webtoon_title'):
                             if key not in row and key in old:result[platform][ident][key]=old[key]
                 elif platform=='series' and row.get('resolved_at','')>old.get('resolved_at',''):
-                    for key in ('original_product_id','resolution_url','resolved_at'):
+                    for key in ('original_product_id','resolution_url','resolved_at','verified_webtoon_title'):
                         if key in row:result[platform][ident][key]=row[key]
             for ident,row in value.get('unavailable',{}).get(platform,{}).items():
                 old=result['unavailable'][platform].get(ident)

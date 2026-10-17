@@ -57,8 +57,17 @@ def build_works(snapshot,metadata):
         linked=[w for w in by_title if w.get('contents_no') and
                 w['contents_no']==row.get('original_product_id') and
                 row.get('resolution_url')==f"https://series.naver.com/comic/detail.series?originalProductId={w['contents_no']}"]
+        # Individually verified title variants still require the official
+        # shared identity and matching creators. Never strip season names.
+        verified_alias=[]
+        if row.get('verified_webtoon_title'):
+            verified_alias=[w for w in index[normalized(base_title(row['verified_webtoon_title']))]
+                if w.get('contents_no') and w['contents_no']==row.get('original_product_id')
+                and row.get('resolution_url')==f"https://series.naver.com/comic/detail.series?originalProductId={w['contents_no']}"
+                and same_creators(w,row)]
+        linked=linked or verified_alias
         candidates=linked or [w for w in by_title if same_creators(w,row)]
-        row['link_basis']='공개 공통 작품번호·제목 확인' if linked else '제목 정규화·작가 일치'
+        row['link_basis']=('공개 공통 작품번호·작가 확인' if verified_alias else '공개 공통 작품번호·제목 확인') if linked else '제목 정규화·작가 일치'
         if len(candidates)==1:groups[f"webtoon:{candidates[0]['title_id']}"].append(row)
         else:
             row['link_review']='동명·작가 일치 후보가 여러 개여서 별도 표시' if len(candidates)>1 else ''
@@ -90,7 +99,8 @@ def build_works(snapshot,metadata):
             key='webtoon' if source['platform']=='네이버웹툰' else 'series'
             blocked=metadata.get('unavailable',{}).get(key,{}).get(source['title_id'])
             if blocked and blocked['observed_at']>source.get('observed_at',''):
-                source['collection_state']='공개 접근 제한'
+                has_observation=source.get('observed_at') and any(m.get('value') is not None for m in source['metrics'].values())
+                source['collection_state']='기존 관측값' if has_observation else '공개 접근 제한'
             elif source.get('observed_at'):source['collection_state']='확인 완료'
             else:source['collection_state']='상세 수집 중'
             source_states.append(source['collection_state'])
@@ -111,7 +121,7 @@ def build_works(snapshot,metadata):
               'series_link_state':'linked_restricted' if restricted else ('linked' if serial else 'unchecked'),
               'series_link_check':restricted or {},
               'link_basis':' / '.join(dict.fromkeys(r.get('link_basis','제목 정규화·작가 일치') for r in sources if r['platform']=='네이버시리즈')) if len(sources)>1 else '단일 연재처',
-              'collection_state':'확인 완료' if all(s=='확인 완료' for s in source_states) else ('공개 접근 제한' if '공개 접근 제한' in source_states else '상세 수집 중')}
+              'collection_state':next((s for s in ('공개 접근 제한','상세 수집 중','기존 관측값') if s in source_states),'확인 완료')}
         work['tags']=search_tags(work)
         if restricted:work['link_basis']='공개 공통 작품번호의 공식 시리즈 주소 확인 · 지표 공개 접근 제한'
         if work['is_new']:work['tags'].insert(0,'신작')

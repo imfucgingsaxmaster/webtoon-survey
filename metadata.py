@@ -219,7 +219,7 @@ def collect_metadata(root=ROOT,webtoon_limit=None,series_limit=None,fresh_hours=
                     if platform=='webtoon': record=parse_webtoon(client.get('/api/article/list/info',titleId=ident),ident)
                     else:
                         record=parse_series(client.html('/comic/detail.series',productNo=ident),ident)
-                        for key in ('original_product_id','resolution_url','resolved_at'):
+                        for key in ('original_product_id','resolution_url','resolved_at','verified_webtoon_title'):
                             if key in cache[platform].get(ident,{}):record[key]=cache[platform][ident][key]
                 except PublicRedirect:
                     unavailable[platform][ident]={'observed_at':utcnow(),'reason':'공개 작품 정보 외 경로로 이동 요청: 로그인·연령 확인 등을 진행하지 않고 제외'}
