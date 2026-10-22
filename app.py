@@ -58,6 +58,9 @@ if selected.startswith('webtoon:'):
         metadata=load_live_metadata()
         if lookup['state']=='temporarily_unavailable':st.info('공개 정보 응답이 지연되어 저장된 관측을 표시합니다.')
 works=build_works(snapshot,metadata)
+weekly_run=metadata.get('runs',{}).get('webtoon',{})
+if weekly_run.get('refresh_since'):
+    st.caption(f"최근 전체 갱신 시작 {korean_time(weekly_run['refresh_since'])} · 이번 실행의 웹툰 지표 새 관측 {weekly_run.get('fresh',0):,} / {len(snapshot['titles']):,}개")
 
 def show_detail(work):
     if st.button('← 검색 화면으로',key='back'):
@@ -206,6 +209,9 @@ with st.expander('수집 현황과 자료 안내'):
     coverage=series_coverage(snapshot,metadata)
     st.progress(coverage['checked']/coverage['total'],text=f"시리즈 연결 조사 {coverage['checked']:,} / {coverage['total']:,}개 · 공식 연결 확인 {coverage['linked']:,}개 · 지표 접근 제한 {coverage['restricted']:,}개")
     st.caption('목록 관측 '+korean_time(snapshot['observed_at'])+' · 매주 월요일 09:17 자동 실행')
+    for platform,label in [('webtoon','웹툰'),('series','시리즈')]:
+        stamps=[r['observed_at'] for r in metadata.get(platform,{}).values() if r.get('observed_at')]
+        if stamps:st.caption(f"{label} 상세 지표 실제 관측 범위: {korean_time(min(stamps))} ~ {korean_time(max(stamps))}")
     st.caption('시리즈는 공개 공통 작품번호로 전체 웹툰 목록을 순회해 연결하고, 중간 결과도 검색에 반영합니다. 작품명 검색·상세 화면에서도 미확인 연결을 보완합니다. 로그인 등으로 상세 지표가 제한되어도 공식 작품 링크는 유지합니다. 네이버웹툰에 없는 시리즈 전체 카탈로그까지 확보했다는 뜻은 아닙니다.')
     st.caption('과거 값은 실제 관측만 보존합니다. 관심·조회수·다운로드는 서로 다른 지표이며 합산하지 않습니다. 자료 없음은 0이나 미연재를 뜻하지 않습니다.')
     st.link_button('GitHub 저장소와 실행 기록 ↗','https://github.com/imfucgingsaxmaster/webtoon-survey')

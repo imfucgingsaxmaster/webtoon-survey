@@ -185,17 +185,23 @@ def save_metadata(value,path):
     temp.write_text(json.dumps(value,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
     temp.replace(path)
 
-def collect_metadata(root=ROOT,webtoon_limit=None,series_limit=None,fresh_hours=144):
+def refresh_boundary(value):
+    stamp=datetime.fromisoformat(value)
+    if stamp.tzinfo is None:raise ValueError('Refresh boundary must include a timezone')
+    return stamp.astimezone(timezone.utc)
+
+def collect_metadata(root=ROOT,webtoon_limit=None,series_limit=None,fresh_hours=144,refresh_since=None):
+    cutoff=refresh_boundary(refresh_since) if refresh_since else datetime.now(timezone.utc)-timedelta(hours=fresh_hours)
     root=Path(root); path=root/'metadata_latest.json'; cache=load_metadata(path)
     unavailable=cache.setdefault('unavailable',{'webtoon':{},'series':{}})
     snapshot=json.loads((root/'catalog_latest.json').read_text(encoding='utf-8'))
     failures=[]
-    cutoff=datetime.now(timezone.utc)-timedelta(hours=fresh_hours)
     def needs_refresh(record):
         return not record or datetime.fromisoformat(record['observed_at']) < cutoff
     for platform,limit in [('webtoon',webtoon_limit),('series',series_limit)]:
         if limit==0: continue
         run={'started_at':utcnow(),'state':'running','fetched':0,'requests':0,'errors':[]}
+        if refresh_since:run['refresh_since']=cutoff.isoformat()
         cache['runs'][platform]=run
         save_metadata(cache,path)
         try:
@@ -207,7 +213,7 @@ def collect_metadata(root=ROOT,webtoon_limit=None,series_limit=None,fresh_hours=
                 ordered=sorted(ids,key=lambda x:(bool(cache[platform].get(x)),cache[platform].get(x,{}).get('observed_at',''),rank.get(x,10**9),int(x)))
             else:
                 client=SeriesClient()
-                ids=series_discovery(client) | set(cache['series'])
+                ids=series_discovery(client) | set(cache['series']) | set(unavailable['series'])
                 ordered=sorted(ids,key=lambda x:(bool(cache[platform].get(x)),cache[platform].get(x,{}).get('observed_at',''),int(x)))
             run['target']=len(ids)
             run['scope']='정식 공개 카탈로그 전체' if platform=='webtoon' else '공개 만화 홈·일간 TOP100 및 이전 발견 작품 (시리즈 전체 아님)'
@@ -330,6 +336,7 @@ if __name__=='__main__':
     parser.add_argument('--webtoon-limit',type=int,default=None,help='Optional per-run detail request budget; 0 skips platform')
     parser.add_argument('--series-limit',type=int,default=None)
     parser.add_argument('--fresh-hours',type=int,default=144)
+    parser.add_argument('--refresh-since',help='Require observations from this timezone-aware run boundary; reuse only checkpoints from this run')
     args=parser.parse_args()
     if any(x is not None and x<0 for x in (args.webtoon_limit,args.series_limit,args.fresh_hours)): parser.error('Budgets and freshness must be nonnegative')
-    collect_metadata(webtoon_limit=args.webtoon_limit,series_limit=args.series_limit,fresh_hours=args.fresh_hours)
+    collect_metadata(webtoon_limit=args.webtoon_limit,series_limit=args.series_limit,fresh_hours=args.fresh_hours,refresh_since=args.refresh_since)

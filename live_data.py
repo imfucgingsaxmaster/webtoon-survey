@@ -10,7 +10,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from radar import ROOT, PublicClient, PublicRedirect, NoRedirect, utcnow, validate_snapshot
-from metadata import load_metadata, parse_webtoon, SeriesClient, SeriesLinkRestricted
+from metadata import load_metadata, parse_webtoon, SeriesClient, SeriesLinkRestricted, refresh_boundary
 from trends import archive_observation
 
 REPOSITORY='imfucgingsaxmaster/webtoon-survey'
@@ -148,22 +148,23 @@ def fill_searched_titles(title_ids,root=ROOT,client_factory=PublicClient):
             return {'fetched':fetched,'state':'temporarily_unavailable'}
         finally:_last_lookup=time.monotonic()
 
-def series_check_due(check,metadata,now=None):
+def series_check_due(check,metadata,now=None,refresh_since=None):
     if not check:return True
     if check.get('state')=='linked' and check.get('series_id') not in metadata['series']:return True
     if check.get('state') not in ('linked','linked_restricted') and check.get('version',0)<LINK_CHECK_VERSION:return True
+    if refresh_since:return datetime.fromisoformat(check['observed_at'])<refresh_boundary(refresh_since)
     hours=1 if check.get('state')=='parse_error' else 144
     return ((now or datetime.now(timezone.utc))-datetime.fromisoformat(check['observed_at'])).total_seconds()>=hours*3600
 
-def series_coverage(snapshot,metadata):
+def series_coverage(snapshot,metadata,refresh_since=None):
     ids={r['title_id'] for r in snapshot['titles']}
     checks={k:v for k,v in metadata.get('series_checks',{}).items() if k in ids}
     return {'total':len(ids),'checked':len(checks),
             'linked':sum(v.get('state') in ('linked','linked_restricted') for v in checks.values()),
             'restricted':sum(v.get('state')=='linked_restricted' for v in checks.values()),
-            'remaining':sum(series_check_due(checks.get(k),metadata) for k in ids)}
+            'remaining':sum(series_check_due(checks.get(k),metadata,refresh_since=refresh_since) for k in ids)}
 
-def fill_series_links(title_ids,root=ROOT,limit=3,webtoon_factory=PublicClient,series_factory=SeriesClient):
+def fill_series_links(title_ids,root=ROOT,limit=3,webtoon_factory=PublicClient,series_factory=SeriesClient,refresh_since=None):
     """Use public contentsNo -> canonical comic resolution, never Series search.
 
     Every successful observation and outcome is checkpointed. Unresolved links
@@ -179,7 +180,7 @@ def fill_series_links(title_ids,root=ROOT,limit=3,webtoon_factory=PublicClient,s
         merged=load_live_metadata(root)
         catalogue={r['title_id']:r for r in read_json(root/'catalog_latest.json',{})['titles']}
         now=datetime.now(timezone.utc)
-        def due(ident):return series_check_due(merged['series_checks'].get(ident),merged,now)
+        def due(ident):return series_check_due(merged['series_checks'].get(ident),merged,now,refresh_since)
         ids=[str(i) for i in dict.fromkeys(title_ids) if str(i) in catalogue and due(str(i))][:limit]
         if not ids:return {'fetched':0,'checked':0,'state':'ready'}
         if time.time()<cache.get('series_retry_after',0):return {'fetched':0,'checked':0,'state':'temporarily_unavailable'}
@@ -217,6 +218,8 @@ def fill_series_links(title_ids,root=ROOT,limit=3,webtoon_factory=PublicClient,s
                     check.update(state='linked_restricted',series_id=exc.product_id,
                                  resolution_url=exc.resolution_url,
                                  reason='공식 시리즈 주소 연결 완료 · 상세 지표는 로그인 등 공개 접근 제한')
+                    cache.setdefault('unavailable',{}).setdefault('series',{})[exc.product_id]={
+                        'observed_at':check['observed_at'],'reason':'작품 상세 지표 응답을 확인할 수 없어 기존 관측 유지'}
                 except PublicRedirect:
                     check.update(state='public_unavailable',reason='공개 만화 작품 주소 이외로 이동 요청: 진행하지 않음')
                 except urllib.error.HTTPError as exc:
