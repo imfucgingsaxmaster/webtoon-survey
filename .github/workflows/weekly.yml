@@ -40,6 +40,8 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Install Korean font
         run: sudo apt-get update -qq && sudo apt-get install -y fonts-nanum
+      - name: Set one observation boundary for the entire refresh
+        run: echo "RADAR_REFRESH_SINCE=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >> "$GITHUB_ENV"
       - name: Collect entire public catalogue
         id: catalogue
         run: python radar.py
@@ -49,7 +51,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # Publish each checkpoint so dashboards do not wait for the full run.
           for batch in $(seq 1 30); do
-            python metadata.py --webtoon-limit 200 --series-limit 0
+            python metadata.py --webtoon-limit 200 --series-limit 0 --refresh-since "$RADAR_REFRESH_SINCE"
             git add catalog_latest.json history/ metadata_latest.json metadata_history/
             if ! git diff --cached --quiet; then
               git commit -m "data: publish public detail checkpoint"
@@ -61,10 +63,12 @@ jobs:
           done
           if [ "$state" != "complete" ]; then echo 'Full catalogue detail collection did not complete'; exit 1; fi
       - name: Resolve public Webtoon to Series links
-        run: python series_links.py --all --limit 50 --publish
+        run: python series_links.py --all --limit 50 --publish --refresh-since "$RADAR_REFRESH_SINCE"
       - name: Refresh other discovered Series titles
         # Linked titles already have fresh metrics; avoid fetching them twice.
-        run: python metadata.py --webtoon-limit 0
+        run: python metadata.py --webtoon-limit 0 --refresh-since "$RADAR_REFRESH_SINCE"
+      - name: Verify actual observations belong to this refresh
+        run: python verify_refresh.py --refresh-since "$RADAR_REFRESH_SINCE"
       - name: Export catalogue and searchable metrics
         if: always() && steps.catalogue.outcome == 'success'
         run: python radar.py --offline
