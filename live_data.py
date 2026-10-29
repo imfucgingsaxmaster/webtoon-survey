@@ -47,6 +47,12 @@ def checked_metadata(value):
 def merge_metadata(*values):
     result={'schema_version':1,'webtoon':{},'series':{},'series_checks':{},'unavailable':{'webtoon':{},'series':{}},'runs':{}}
     for value in values:
+        for platform in ('webtoon','series'):
+            destination=result.setdefault('publisher_details',{}).setdefault(platform,{})
+            for ident,row in value.get('publisher_details',{}).get(platform,{}).items():
+                old=destination.get(ident,{})
+                if row.get('observed_at','')>=old.get('observed_at',''):
+                    destination[ident]=copy.deepcopy(row)
         manifest=value.get('history_index',{})
         if manifest.get('built_at','')>result.get('history_index',{}).get('built_at',''):
             result['history_index']=copy.deepcopy(manifest)

@@ -5,6 +5,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from metadata import build_rows, empty_metrics, search_tags
+from publishers import publisher_for_work
 
 FORMAT_LABELS={'독점','단행본','컬러연재','연재','완결','네이버웹툰','웹툰','드라마원작','영화원작'}
 
@@ -89,6 +90,7 @@ def build_works(snapshot,metadata):
         webtoon=next((r for r in sources if r['platform']=='네이버웹툰'),None)
         serial=next((r for r in sources if r['platform']=='네이버시리즈'),None)
         primary=webtoon or serial
+        publisher=publisher_for_work(webtoon,serial,metadata)
         restricted=restricted_links.get(webtoon['title_id']) if webtoon and not serial else None
         metrics=empty_metrics();provenance={}
         for key,source in [('interest',webtoon),('downloads',serial),('comments',serial)]:
@@ -109,9 +111,11 @@ def build_works(snapshot,metadata):
             else:source['collection_state']='상세 수집 중'
             source_states.append(source['collection_state'])
         work={'work_id':work_id,'title':primary['title'] if webtoon else base_title(primary['title']),
-              'publisher':serial.get('publisher','') if serial else '',
-              'publisher_label':serial.get('publisher_label','') if serial else '',
-              'publisher_url':serial['source_url'] if serial and serial.get('publisher') else '',
+              'publisher':publisher.get('publisher',''),
+              'publisher_label':publisher.get('publisher_label',''),
+              'publisher_url':publisher.get('source_url','') if publisher.get('publisher') else '',
+              'publisher_observed_at':publisher.get('observed_at',''),
+              'publisher_state':publisher.get('state','pending'),
               'serial_days':(webtoon.get('serial_days') or sorted(catalogue_days[webtoon['title_id']],key=day_order.index)) if webtoon else [],
               'author':primary.get('author',''),'status':primary.get('status','미표시'),
               'rating':primary.get('rating'),'venues':venues,'sources':sources,

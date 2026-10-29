@@ -72,6 +72,12 @@ def show_detail(work):
         if publisher:
             st.markdown(f'제작사: **{escape(publisher)}** · 시리즈 출판사 기준')
             st.link_button('이 제작사의 작품 보기','?'+urlencode({'shelf':'publishers','publisher':publisher_key(publisher)}))
+        elif work.get('publisher_state')=='no_series_link':
+            st.caption('제작사: 공식 웹툰 정보에 시리즈 연결이 제공되지 않아 출판사를 확인할 수 없습니다.')
+        elif work.get('publisher_state')=='not_listed':
+            st.caption('제작사: 확인한 시리즈 작품 페이지에 출판사 표시가 없습니다.')
+        else:
+            st.caption('제작사: 시리즈 출판사 확인 중')
         else:st.caption('제작사: 시리즈 출판사 정보 미확인')
         if work['is_new']:st.caption('신작 기준: 네이버웹툰 공식 목록의 신작 표시 · '+korean_time(snapshot['observed_at']))
         a,b=st.columns(2);c,d=st.columns(2)
@@ -158,8 +164,15 @@ def show_publishers():
         x.metric('확인된 제작사',f'{len(known):,}')
         y.metric('제작사 확인 작품',f'{sum(g["works"] for g in known):,}')
         z.metric('제작사 미확인 작품',f'{sum(g["works"] for g in ranks if not g["key"]):,}')
-        frozen_unknown=sum(g['finished'] for g in ranks if not g['key'])
-        if frozen_unknown:st.caption(f'미확인 중 {frozen_unknown:,}개는 제작사 정보가 저장되지 않은 완결 보관 작품입니다. 요청한 갱신 제외 원칙에 따라 이전 자료를 유지합니다.')
+        from collections import Counter
+        states=Counter(w.get('publisher_state','pending') for w in works if not w.get('publisher'))
+        labels={'pending':'확인 대기','no_series_link':'공식 시리즈 연결 미제공','not_listed':'원문 출판사 미표시',
+                'unavailable':'작품 페이지 재확인 필요','identity_review':'작품 연결 재확인 필요'}
+        if states:st.caption(' · '.join(f'{labels.get(k,k)} {v:,}개' for k,v in states.items()))
+        st.caption('완결 작품의 수치는 마지막 자료를 유지하며, 누락된 출판사 정보는 별도로 보완합니다.')
+        publisher_run=metadata.get('runs',{}).get('publishers',{})
+        if publisher_run.get('state')=='running' and publisher_run.get('target'):
+            st.progress(min(1,publisher_run.get('checked',0)/publisher_run['target']),text=f"출판사 정보 확인 {publisher_run.get('checked',0):,} / {publisher_run['target']:,}")
         matching=[(i,g) for i,g in enumerate(known,1) if search_text(company_query) in search_text(g['publisher'])]
         for g in ranks:
             if not g['key'] and (not company_query or search_text(company_query) in search_text(UNKNOWN)):matching.append(('—',g))
