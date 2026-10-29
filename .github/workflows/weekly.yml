@@ -42,7 +42,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y fonts-nanum
       - name: Set one observation boundary for the entire refresh
         run: echo "RADAR_REFRESH_SINCE=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >> "$GITHUB_ENV"
-      - name: Collect entire public catalogue
+      - name: Refresh ongoing catalogue and preserve completed archive
         id: catalogue
         run: python radar.py
       - name: Collect public title metrics and genres
@@ -52,7 +52,8 @@ jobs:
           # Publish each checkpoint so dashboards do not wait for the full run.
           for batch in $(seq 1 30); do
             python metadata.py --webtoon-limit 200 --series-limit 0 --refresh-since "$RADAR_REFRESH_SINCE"
-            git add catalog_latest.json history/ metadata_latest.json metadata_history/
+            python history_index.py
+            git add catalog_latest.json history/ metadata_latest.json metadata_history/ history_index.json.gz
             if ! git diff --cached --quiet; then
               git commit -m "data: publish public detail checkpoint"
               git pull --rebase origin main
@@ -71,7 +72,10 @@ jobs:
         run: python verify_refresh.py --refresh-since "$RADAR_REFRESH_SINCE"
       - name: Export catalogue and searchable metrics
         if: always() && steps.catalogue.outcome == 'success'
-        run: python radar.py --offline
+        run: |
+          python history_index.py
+          python radar.py --offline
+          python notion_export.py
       - name: Preserve catalogue history
         if: always() && steps.catalogue.outcome == 'success'
         run: |
@@ -80,6 +84,7 @@ jobs:
           git add catalog_latest.json history/
           if [ -f metadata_latest.json ]; then git add metadata_latest.json; fi
           if [ -d metadata_history ]; then git add metadata_history/; fi
+          if [ -f history_index.json.gz ]; then git add history_index.json.gz; fi
           if ! git diff --cached --quiet; then
             git commit -m "data: update catalogue and public title metrics"
             git pull --rebase origin main
