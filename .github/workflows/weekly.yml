@@ -20,7 +20,9 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Verify catalogue, work linking and live updates
-        run: python -m unittest discover -p 'test*.py' -v
+        run: |
+          python -m py_compile app.py
+          python -m unittest discover -p 'test*.py' -v
   analyze:
     needs: validate
     if: github.event_name != 'push'
@@ -45,6 +47,11 @@ jobs:
       - name: Refresh ongoing catalogue and preserve completed archive
         id: catalogue
         run: python radar.py
+      - name: Fill missing publishers without changing completed metrics
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python publisher_enrichment.py --batch-size 100 --publish
       - name: Collect public title metrics and genres
         run: |
           git config user.name "github-actions[bot]"
