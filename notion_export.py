@@ -48,7 +48,7 @@ def package_files(works,snapshot):
 - 목록 관측 UTC: {observed}
 - 통합 작품 {len(works):,}개, 연재·휴재 {len(works)-finished:,}개, 완결 보관 {finished:,}개
 - 제작사 확인 {sum(g['works'] for g in known):,}개 / {len(works):,}개, {len(known):,}개 제작사
-- 연재·휴재는 매주 월요일 09:17 한국시간에 갱신합니다. 완결 작품은 마지막 관측을 보존하며 갱신에서 제외합니다.
+- 연재·휴재는 매주 월요일 09:17 한국시간에 갱신합니다. 완결 작품의 수치는 마지막 관측을 보존하며, 누락 출판사만 별도 보완합니다.
 
 ## 제작사별 다운로드 순위
 
