@@ -34,6 +34,11 @@ a.radar-card:hover{transform:translateY(-4px)}a.radar-card:focus-visible{outline
 .radar-cover{display:block;width:100%;max-height:430px;object-fit:cover;border-radius:12px}
 .radar-chip{display:inline-block;padding:5px 10px;margin:0 6px 6px 0;background:#e7efe8;border-radius:5px;font-size:12px;color:#3a6251}
 .radar-chip.new{background:#0c9c65;color:white;font-weight:750}
+.publisher-table{overflow:auto;max-height:650px;margin:16px 0 24px;border:1px solid #dce4de;border-radius:10px;background:white}
+.publisher-table table{width:100%;border-collapse:collapse;font-size:14px;white-space:nowrap}
+.publisher-table th{position:sticky;top:0;background:#e7efe8;text-align:left;color:#244d3d}
+.publisher-table td,.publisher-table th{padding:13px 16px;border-bottom:1px solid #e6ece7}
+.publisher-table a{color:#08734e;font-weight:650}.publisher-table tr:hover{background:#f2f7f1}
 @media(max-width:1100px){.radar-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.block-container{padding:1.6rem}}
 @media(max-width:650px){.radar-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 12px}.radar-brand span{display:none}h1{font-size:1.8rem!important}.block-container{padding:1rem}.radar-name{font-size:14px}}
 </style>'''

@@ -34,6 +34,10 @@ def is_collected_edition(row):
     return '[단행본]' in row['title'] or bool(re.search(r'\[\d+권 세트\]',row['title']))
 
 def build_works(snapshot,metadata):
+    day_order=['월','화','수','목','금','토','일','매일+']
+    catalogue_days=defaultdict(set)
+    for membership in snapshot.get('memberships',[]):
+        if membership['group'] in day_order:catalogue_days[membership['title_id']].add(membership['group'])
     source_rows=build_rows(snapshot,metadata)
     webtoons=[r for r in source_rows if r['platform']=='네이버웹툰']
     series=[r for r in source_rows if r['platform']=='네이버시리즈']
@@ -105,6 +109,10 @@ def build_works(snapshot,metadata):
             else:source['collection_state']='상세 수집 중'
             source_states.append(source['collection_state'])
         work={'work_id':work_id,'title':primary['title'] if webtoon else base_title(primary['title']),
+              'publisher':serial.get('publisher','') if serial else '',
+              'publisher_label':serial.get('publisher_label','') if serial else '',
+              'publisher_url':serial['source_url'] if serial and serial.get('publisher') else '',
+              'serial_days':(webtoon.get('serial_days') or sorted(catalogue_days[webtoon['title_id']],key=day_order.index)) if webtoon else [],
               'author':primary.get('author',''),'status':primary.get('status','미표시'),
               'rating':primary.get('rating'),'venues':venues,'sources':sources,
               'aliases':list(dict.fromkeys(r['title'] for r in sources)),
@@ -145,7 +153,7 @@ def filter_works(works,query='',tags=(),mode='모두 포함',minimums=None,venue
     for work in works:
         if selected and not selected & set(work['venues']):continue
         if wanted and not (wanted<=set(work['tags']) if mode=='모두 포함' else bool(wanted & set(work['tags']))):continue
-        fields=[work['title'],work.get('author',''),*work['aliases'],*work['tags']]
+        fields=[work['title'],work.get('author',''),work.get('publisher',''),*work['aliases'],*work['tags']]
         if query and not any(query in search_text(field) for field in fields):continue
         if any(work[k] is None or work[k]<v for k,v in (minimums or {}).items() if v>0):continue
         result.append(work)
@@ -165,22 +173,29 @@ def export_works_excel(works,path):
     from openpyxl.styles import Font, PatternFill
     wb=Workbook();ws=wb.active;ws.title='작품 통합 검색'
     ws.append(['작품 ID','작품명','연재처','작가','장르','관심 수(웹툰)','다운로드 수(시리즈)','댓글 수(시리즈)',
-               '관심 원문','다운로드 원문','댓글 원문','검색 태그','확인 상태','웹툰 링크','시리즈 링크','연결 근거','조회수 공개목록 값','신작','신작 근거'])
+               '관심 원문','다운로드 원문','댓글 원문','검색 태그','확인 상태','웹툰 링크','시리즈 링크','연결 근거','조회수 공개목록 값','신작','신작 근거','제작사(시리즈 출판사)','연재요일','상태','갱신 정책'])
     detail=wb.create_sheet('연재처별 원자료')
     detail.append(['통합 작품 ID','연재처','원본 작품 ID','작품명·판본','작가','장르','관심 수','다운로드 수','댓글 수','관측 UTC','출처','공통 작품번호','공식 연결 확인 URL'])
     for w in works:
         ws.append([w['work_id'],w['title'],' / '.join(w['venues']),w['author'],', '.join(w['genres']),
                    w['interest'],w['downloads'],w['comments'],w['interest_display'],w['downloads_display'],w['comments_display'],
-                   ', '.join(w['tags']),w['collection_state'],w['webtoon_url'],w['series_url'],w['link_basis'],w.get('views'),'신작' if w.get('is_new') else '',w.get('new_basis','')])
+                   ', '.join(w['tags']),w['collection_state'],w['webtoon_url'],w['series_url'],w['link_basis'],w.get('views'),'신작' if w.get('is_new') else '',w.get('new_basis',''),w.get('publisher',''),' / '.join(w.get('serial_days',[])),w['status'],'완결 보관 · 갱신 제외' if w['status']=='완결' else '매주 갱신'])
         for s in w['sources']:
             detail.append([w['work_id'],s['platform'],s['title_id'],s['title'],s.get('author',''),', '.join(s.get('genres',[])),
                            *[s['metrics'][k]['value'] for k in ('interest','downloads','comments')],s.get('observed_at',''),s['source_url'],s.get('contents_no') or s.get('original_product_id'),s.get('resolution_url','')])
+    from publishers import publisher_rankings
+    rank=wb.create_sheet('제작사별 순위')
+    rank.append(['제작사(시리즈 출판사)','작품 수','연재·휴재','완결 보관','다운로드 합계','다운로드 확인 작품 수','근삿값 포함'])
+    for group in publisher_rankings(works):
+        rank.append([group[k] for k in ('publisher','works','ongoing','finished','downloads','downloads_known','approximate')])
     note=wb.create_sheet('지표 안내')
     for line in ['공개 공통 작품번호와 제목으로 확인하거나, 동일 제목에 작가가 모두 또는 2명 이상 일치할 때 통합합니다. 동명 후보가 여러 개면 별도로 표시합니다.',
                  '관심은 웹툰, 다운로드·댓글은 시리즈 대표 연재판의 값입니다. 서로 다른 플랫폼·판본의 수치는 합산하지 않습니다.',
                  '시리즈에 여러 판본이 있으면 연재판을 우선하며, 모든 판본의 원자료와 출처는 별도 시트에 보존합니다.',
                  '빈 숫자는 연재처 연결 미확인·미제공·수집 중·공개 접근 제한이며 0이 아닙니다. 연결 미확인은 해당 플랫폼에 미연재라는 뜻이 아닙니다.',
-                 '만·억 등 축약된 원문은 근삿값입니다. 태그·최소값 검색도 표시값 환산 기준입니다.']:
+                 '만·억 등 축약된 원문은 근삿값입니다. 태그·최소값 검색도 표시값 환산 기준입니다.',
+                 '제작사는 시리즈 페이지의 출판사 기준이며 대표 시리즈 판본을 작품당 한 번만 합산합니다. 미확인 수치는 합계에서 제외합니다.',
+                 '완결 작품은 마지막 관측을 보관하며 갱신하지 않습니다. 완결 보관 수치는 제작사 합계에 포함됩니다. 제작사 미확인은 순위 밖의 별도 그룹입니다.']:
         note.append([line])
     for sheet in wb:
         sheet.freeze_panes='A2';sheet.auto_filter.ref=sheet.dimensions

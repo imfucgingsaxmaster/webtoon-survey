@@ -5,6 +5,7 @@ episode bodies, images, comments, private data, or access-control bypasses.
 """
 from __future__ import annotations
 import argparse
+import copy
 import gzip
 import hashlib
 import json
@@ -202,6 +203,39 @@ def validate_snapshot(snapshot):
             raise ValueError('Coverage mismatch')
 
 
+def collect_active_catalogue(client, previous):
+    """Read only active lists; preserve completed rows and their observation dates."""
+    validate_snapshot(previous)
+    started=utcnow();titles={r['title_id']:copy.deepcopy(r) for r in previous['titles']}
+    frozen={i for i,r in titles.items() if r['status']=='완결'}
+    for row in titles.values():row.setdefault('catalog_observed_at',previous['observed_at'])
+    observed=set();memberships=[]
+    weekday=client.get('/api/webtoon/titlelist/weekday',order='user').get('titleListMap')
+    if not isinstance(weekday,dict) or not set(WEEKDAYS)<=set(weekday):raise ValueError('Missing weekday list')
+    groups=[(label,weekday[key]) for key,label in WEEKDAYS.items()]
+    groups.append(('매일+',client.get('/api/webtoon/titlelist/weekday',week='dailyPlus',order='user').get('titleList')))
+    for group,items in groups:
+        if not isinstance(items,list) or not items:raise ValueError('Missing active list')
+        seen=set()
+        for position,item in enumerate(items,1):
+            row=normalize(item);ident=row['title_id']
+            if ident in seen:raise ValueError('Duplicate active title')
+            seen.add(ident)
+            if ident in frozen:continue
+            row['catalog_observed_at']=utcnow();titles[ident]=row;observed.add(ident)
+            memberships.append({'title_id':ident,'group':group,'position':position})
+    memberships.extend(copy.deepcopy(m) for m in previous['memberships'] if m['title_id'] not in observed)
+    counts=Counter(m['group'] for m in memberships)
+    ended=utcnow();result=copy.deepcopy(previous)
+    result.update(snapshot_id=ended.replace(':','').replace('+0000','Z'),started_at=started,observed_at=ended,
+                  scope='연재·휴재 목록 갱신 + 완결 작품 보관',robots_sha256=client.robots_hash,
+                  frozen_completed=len(frozen),titles=sorted(titles.values(),key=lambda r:int(r['title_id'])),
+                  memberships=memberships,coverage=[{'group':g,'items':n,'expected':n,'pages':0 if g=='완결목록' else 1,
+                  'mode':'보관된 완결 목록' if g=='완결목록' else '현재 목록과 보관 항목'} for g,n in counts.items()])
+    validate_snapshot(result)
+    return result
+
+
 @contextmanager
 def connect(path):
     Path(path).parent.mkdir(parents=True,exist_ok=True)
@@ -358,7 +392,7 @@ def run(offline=False, root=ROOT):
     if offline:
         snapshot=json.loads(latest.read_text(encoding='utf-8'))
     else:
-        snapshot=collect(PublicClient())
+        snapshot=collect_active_catalogue(PublicClient(),json.loads(latest.read_text(encoding='utf-8'))) if latest.exists() else collect(PublicClient())
     validate_snapshot(snapshot)
     previous=None
     db=output/'catalogue.sqlite'

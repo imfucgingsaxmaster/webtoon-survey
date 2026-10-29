@@ -3,8 +3,9 @@ import gzip
 import json
 from pathlib import Path
 from radar import ROOT
+from history_index import load_index,build_index
 
-def metric_history(work,metadata,snapshot,root=ROOT):
+def metric_history(work,metadata,snapshot,root=ROOT,allow_legacy=True):
     root=Path(root);points={key:{} for key in ('interest','views','downloads','comments')}
     source_ids={key:(p['platform'],p['title_id']) for key,p in work['metric_sources'].items()}
     def add_details(value):
@@ -25,12 +26,22 @@ def metric_history(work,metadata,snapshot,root=ROOT):
         row=next((r for r in value.get('titles',[]) if r['title_id']==ident),{})
         count=row.get('public_views')
         if type(count) is not int or count<=0:return
-        stamp=value['observed_at']
+        stamp=row.get('catalog_observed_at') or value['observed_at']
         points['views'][stamp]={'observed_at':stamp,'value':count,'display':f'{count:,}',
             'approximate':False,'source_url':value['source_url'],'platform':'네이버웹툰','title_id':ident}
-    for folder,reader in [('metadata_history',add_details),('history',add_catalogue),('.radar_cache/observations',add_details)]:
-        for path in sorted((root/folder).glob('*.json.gz')):
-            reader(json.loads(gzip.decompress(path.read_bytes())))
+    index=load_index(root)
+    if index is None and allow_legacy:index=build_index(root,persist=False)
+    for key in points:
+        selected=source_ids.get(key) if key!='views' else ('네이버웹툰',work.get('webtoon_id'))
+        if not selected:continue
+        platform,ident=selected
+        source=('webtoon' if platform=='네이버웹툰' else 'series')+':'+str(ident)
+        url=(f'https://comic.naver.com/webtoon/list?titleId={ident}' if platform=='네이버웹툰'
+             else f'https://series.naver.com/comic/detail.series?productNo={ident}')
+        if key=='views':url=snapshot.get('source_url','https://comic.naver.com/webtoon')
+        for stamp,value,display,approximate in (index or {}).get('sources',{}).get(source,{}).get(key,[]):
+            points[key][stamp]={'observed_at':stamp,'value':value,'display':display,'approximate':approximate,
+                               'source_url':url,'platform':platform,'title_id':ident}
     add_details(metadata);add_catalogue(snapshot)
     return {key:[rows[t] for t in sorted(rows)] for key,rows in points.items()}
 

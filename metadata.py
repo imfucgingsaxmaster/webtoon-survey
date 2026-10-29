@@ -12,11 +12,13 @@ import json
 import re
 import sqlite3
 import urllib.parse
+import urllib.error
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from pathlib import Path
 from bs4 import BeautifulSoup
-from radar import ROOT, BASE, UA, PublicClient, PublicRedirect, flattened, utcnow, public_cover_url
+from radar import ROOT, BASE, UA, PublicClient, PublicRedirect, flattened, utcnow, public_cover_url, WEEKDAYS
+from collection_policy import frozen_ids
 
 SERIES = 'https://series.naver.com'
 METRICS = {'interest':'관심', 'downloads':'다운로드', 'comments':'댓글'}
@@ -59,6 +61,9 @@ def parse_webtoon(data, title_id, observed_at=None):
     metrics['interest']={'value':count,'display':f'{count:,}' if count is not None else '', 'approximate':False}
     return {'platform':'네이버웹툰','title_id':str(title_id),'title':data['titleName'],
             'contents_no':str(contents_no) if contents_no else None,
+            'finished':data.get('finished') if type(data.get('finished')) is bool else None,
+            'serial_days':[WEEKDAYS[d] for d in data.get('publishDayOfWeekList',[]) if d in WEEKDAYS],
+            'publish_description':data.get('publishDescription',''),
             'cover_url':public_cover_url(data.get('thumbnailUrl')),
             'genres':sorted({t['tagName'] for t in tags if str(t.get('curationType','')).startswith('GENRE_')}),
             'official_tags':sorted({t['tagName'] for t in tags}), 'metrics':metrics,
@@ -79,10 +84,14 @@ def parse_series(html, title_id, observed_at=None):
     genres=sorted({a.get_text(strip=True) for a in soup.select('.end_info .info_lst a[href]')
                    if urllib.parse.urlsplit(a['href']).path=='/comic/categoryProductList.series'
                    and 'genreCode' in urllib.parse.parse_qs(urllib.parse.urlsplit(a['href']).query)})
-    authors=[]
+    authors=[];publisher='';publisher_label=''
     status='미표시'
     for li in soup.select('.end_info .info_lst > ul > li'):
         text=li.get_text(' ',strip=True)
+        label=li.find('span')
+        if label and label.get_text(strip=True) in ('출판사','제작사'):
+            publisher_label=label.get_text(strip=True)
+            publisher=' / '.join(a.get_text(' ',strip=True) for a in li.select('a')) or text.removeprefix(publisher_label).strip()
         if text.startswith(('글 ','그림 ')): authors.extend(a.get_text(strip=True) for a in li.select('a'))
         if text in ('연재중','완결','휴재'): status={'연재중':'연재'}.get(text,text)
     score=soup.select_one('.end_head .score_area em')
@@ -92,6 +101,7 @@ def parse_series(html, title_id, observed_at=None):
     return {'platform':'네이버시리즈','title_id':str(title_id),'title':heading.get_text(' ',strip=True),
             'cover_url':public_cover_url(cover.get('content')) if cover else '',
             'author':' / '.join(dict.fromkeys(authors)),'status':status,'rating':rating,
+            'publisher':publisher,'publisher_label':publisher_label,
             'genres':genres,'official_tags':[], 'metrics':metrics,
             'source_url':f'{SERIES}/comic/detail.series?productNo={title_id}',
             'observed_at':observed_at or utcnow()}
@@ -195,11 +205,13 @@ def collect_metadata(root=ROOT,webtoon_limit=None,series_limit=None,fresh_hours=
     root=Path(root); path=root/'metadata_latest.json'; cache=load_metadata(path)
     unavailable=cache.setdefault('unavailable',{'webtoon':{},'series':{}})
     snapshot=json.loads((root/'catalog_latest.json').read_text(encoding='utf-8'))
+    frozen=frozen_ids(snapshot,cache)
     failures=[]
     def needs_refresh(record):
         return not record or datetime.fromisoformat(record['observed_at']) < cutoff
     for platform,limit in [('webtoon',webtoon_limit),('series',series_limit)]:
         if limit==0: continue
+        frozen=frozen_ids(snapshot,cache)
         run={'started_at':utcnow(),'state':'running','fetched':0,'requests':0,'errors':[]}
         if refresh_since:run['refresh_since']=cutoff.isoformat()
         cache['runs'][platform]=run
@@ -209,14 +221,16 @@ def collect_metadata(root=ROOT,webtoon_limit=None,series_limit=None,fresh_hours=
                 client=PublicClient()
                 rank={}
                 for m in snapshot['memberships']: rank[m['title_id']]=min(rank.get(m['title_id'],10**9),m['position'])
-                ids={t['title_id'] for t in snapshot['titles']}
+                ids={t['title_id'] for t in snapshot['titles']}-frozen['webtoon']
                 ordered=sorted(ids,key=lambda x:(bool(cache[platform].get(x)),cache[platform].get(x,{}).get('observed_at',''),rank.get(x,10**9),int(x)))
             else:
                 client=SeriesClient()
-                ids=series_discovery(client) | set(cache['series']) | set(unavailable['series'])
+                ids=(series_discovery(client) | set(cache['series']) | set(unavailable['series']))-frozen['series']
                 ordered=sorted(ids,key=lambda x:(bool(cache[platform].get(x)),cache[platform].get(x,{}).get('observed_at',''),int(x)))
             run['target']=len(ids)
-            run['scope']='정식 공개 카탈로그 전체' if platform=='webtoon' else '공개 만화 홈·일간 TOP100 및 이전 발견 작품 (시리즈 전체 아님)'
+            run['frozen']=len(frozen[platform])
+            run['scope']='연재·휴재 작품 · 완결 보관 제외' if platform=='webtoon' else '공개 만화 홈·일간 TOP100 및 이전 발견 작품 · 완결 보관 제외 (시리즈 전체 아님)'
+            timeouts=0
             for ident in ordered:
                 if not needs_refresh(cache[platform].get(ident)) or not needs_refresh(unavailable[platform].get(ident)): continue
                 if limit is not None and run['requests']>=limit: break
@@ -230,8 +244,25 @@ def collect_metadata(root=ROOT,webtoon_limit=None,series_limit=None,fresh_hours=
                 except PublicRedirect:
                     unavailable[platform][ident]={'observed_at':utcnow(),'reason':'공개 작품 정보 외 경로로 이동 요청: 로그인·연령 확인 등을 진행하지 않고 제외'}
                     continue
+                except TimeoutError:
+                    timeouts+=1
+                    unavailable[platform][ident]={'observed_at':utcnow(),'reason':'응답 시간 초과 · 기존 관측 유지'}
+                    save_metadata(cache,path)
+                    if timeouts>=3:raise RuntimeError('Three consecutive timeouts; collection paused')
+                    continue
+                except urllib.error.HTTPError as exc:
+                    if exc.code not in (404,410):raise
+                    unavailable[platform][ident]={'observed_at':utcnow(),'reason':'공개 작품 페이지 없음 · 기존 관측 유지'}
+                    continue
+                timeouts=0
                 unavailable[platform].pop(ident,None)
                 cache[platform][ident]=record
+                if platform=='webtoon' and record.get('finished') is True:
+                    for title in snapshot['titles']:
+                        if title['title_id']==ident:title['status']='완결';title['is_new']=False
+                    snapshot['observed_at']=utcnow()
+                    snapshot['snapshot_id']=snapshot['observed_at'].replace(':','').replace('+0000','Z')
+                    (root/'catalog_latest.json').write_text(json.dumps(snapshot,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
                 run['fetched']+=1
                 if run['fetched']%20==0:
                     save_metadata(cache,path)
@@ -270,7 +301,7 @@ def build_rows(snapshot,metadata):
     rows=[]
     for item in flattened(snapshot):
         detail=metadata.get('webtoon',{}).get(item['title_id'],{})
-        rows.append(dict(item,**{k:detail.get(k,default) for k,default in [('contents_no',None),('genres',[]),('official_tags',[]),('metrics',empty_metrics()),('observed_at',''),('source_url',item['url'])]}))
+        rows.append(dict(item,**{k:detail.get(k,default) for k,default in [('contents_no',None),('serial_days',[]),('publish_description',''),('genres',[]),('official_tags',[]),('metrics',empty_metrics()),('observed_at',''),('source_url',item['url'])]}))
     for item in metadata.get('series',{}).values():
         rows.append(dict(item,url=item['source_url'],groups='공개 홈·일간 TOP100·이전 발견'))
     for row in rows:

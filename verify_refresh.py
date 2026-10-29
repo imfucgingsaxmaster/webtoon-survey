@@ -6,6 +6,7 @@ from pathlib import Path
 from radar import ROOT, utcnow
 from metadata import refresh_boundary
 from live_data import load_live_metadata, write_json
+from collection_policy import frozen_ids
 
 
 def refresh_report(snapshot, details, refresh_since):
@@ -16,8 +17,10 @@ def refresh_report(snapshot, details, refresh_since):
 
     report = {'started_at': boundary.isoformat(), 'verified_at': utcnow(),
               'catalogue_current': recent(snapshot)}
-    webtoon_ids = {row['title_id'] for row in snapshot['titles']}
-    series_ids = set(details.get('series', {})) | set(details.get('unavailable', {}).get('series', {}))
+    frozen=frozen_ids(snapshot,details)
+    webtoon_ids = {row['title_id'] for row in snapshot['titles']}-frozen['webtoon']
+    series_ids = (set(details.get('series', {})) | set(details.get('unavailable', {}).get('series', {})))-frozen['series']
+    report['frozen_completed']={p:len(ids) for p,ids in frozen.items()}
     for platform, ids in [('webtoon', webtoon_ids), ('series', series_ids)]:
         observed = details.get(platform, {})
         blocked = details.get('unavailable', {}).get(platform, {})

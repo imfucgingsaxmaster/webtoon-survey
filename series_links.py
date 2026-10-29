@@ -6,9 +6,10 @@ import subprocess
 from pathlib import Path
 from radar import ROOT,utcnow
 from live_data import fill_series_links,load_live_metadata,write_json,series_coverage,series_check_due
+from collection_policy import active_webtoon_ids
 
 def pending_ids(snapshot,details,refresh_since=None):
-    ids=[r['title_id'] for r in snapshot['titles'] if series_check_due(details['series_checks'].get(r['title_id']),details,refresh_since=refresh_since)]
+    ids=[i for i in active_webtoon_ids(snapshot) if series_check_due(details['series_checks'].get(i),details,refresh_since=refresh_since)]
     ids.sort(key=lambda i:(bool(details['series_checks'].get(i)),
                           details['series_checks'].get(i,{}).get('observed_at',''),
                           -(details['webtoon'].get(i,{}).get('metrics',{}).get('interest',{}).get('value') or 0)))
@@ -26,8 +27,10 @@ def save_checkpoint(root,snapshot,started,state,refresh_since=None):
     return coverage
 
 def publish_checkpoint(root):
+    from history_index import build_index
+    build_index(root)
     def git(*args,**kwargs):return subprocess.run(['git',*args],cwd=root,check=True,**kwargs)
-    git('add','metadata_latest.json','metadata_history/')
+    git('add','metadata_latest.json','metadata_history/','history_index.json.gz')
     changed=subprocess.run(['git','diff','--cached','--quiet'],cwd=root).returncode
     if changed==1:
         git('commit','-m','data: publish Series link checkpoint')
