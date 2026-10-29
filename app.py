@@ -78,7 +78,6 @@ def show_detail(work):
             st.caption('제작사: 확인한 시리즈 작품 페이지에 출판사 표시가 없습니다.')
         else:
             st.caption('제작사: 시리즈 출판사 확인 중')
-        else:st.caption('제작사: 시리즈 출판사 정보 미확인')
         if work['is_new']:st.caption('신작 기준: 네이버웹툰 공식 목록의 신작 표시 · '+korean_time(snapshot['observed_at']))
         a,b=st.columns(2);c,d=st.columns(2)
         a.metric('관심 수 · 웹툰',work['interest_display'])
