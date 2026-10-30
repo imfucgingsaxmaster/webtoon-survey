@@ -77,6 +77,8 @@ jobs:
         run: python metadata.py --webtoon-limit 0 --refresh-since "$RADAR_REFRESH_SINCE"
       - name: Verify actual observations belong to this refresh
         run: python verify_refresh.py --refresh-since "$RADAR_REFRESH_SINCE"
+      - name: Refresh descriptions and episode totals for ongoing works
+        run: python profile_collection.py --refresh --publish
       - name: Export catalogue and searchable metrics
         if: always() && steps.catalogue.outcome == 'success'
         run: |
