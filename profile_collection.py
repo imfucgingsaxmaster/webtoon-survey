@@ -40,10 +40,11 @@ def fetch_profile(target,series,webtoon):
         return result
 
 
-def collect_profiles(root=ROOT,limit=None,refresh=False,publish=False):
+def collect_profiles(root=ROOT,limit=None,refresh=False,publish=False,platform='all'):
     root=Path(root);path=root/'metadata_latest.json'
     cache=json.loads(path.read_bytes());snapshot=json.loads((root/'catalog_latest.json').read_bytes())
     targets=profile_targets(snapshot,cache,refresh)
+    if platform!='all':targets=[t for t in targets if bool(t['series_id'])==(platform=='series')]
     if limit is not None:targets=targets[:limit]
     series=PacedClient(SeriesClient());policy=PublicClient();policy.allowed=policy.allowed|{'/api/article/list'};webtoon=PacedClient(policy)
     profiles=cache.get('profiles',{}).copy();checked=0;started=utcnow()
@@ -74,5 +75,6 @@ def collect_profiles(root=ROOT,limit=None,refresh=False,publish=False):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',default=str(ROOT));p.add_argument('--limit',type=int)
-    p.add_argument('--refresh',action='store_true');p.add_argument('--publish',action='store_true');a=p.parse_args()
-    collect_profiles(a.root,a.limit,a.refresh,a.publish)
+    p.add_argument('--refresh',action='store_true');p.add_argument('--publish',action='store_true')
+    p.add_argument('--platform',choices=['all','series','webtoon'],default='all');a=p.parse_args()
+    collect_profiles(a.root,a.limit,a.refresh,a.publish,a.platform)

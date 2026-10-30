@@ -8,6 +8,7 @@ from radar import utcnow
 def clean_description(value):
     if not isinstance(value,str):return ''
     value=value.replace('\r\n','\n').replace('\xa0',' ')
+    value=re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]','',value)
     return '\n'.join(line.strip() for line in value.splitlines() if line.strip())
 
 

@@ -2,7 +2,7 @@ import copy
 import unittest
 from unittest.mock import patch
 import radar,metadata,works,live_data,trends
-from work_profiles import series_profile,webtoon_profile,estimated_revenue,works_by_author
+from work_profiles import series_profile,webtoon_profile,estimated_revenue,works_by_author,clean_description
 from profile_collection import profile_targets
 import tests as fixtures
 
@@ -19,6 +19,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual((row['episode_count'],row['episode_unit']),(12,'권'))
         self.assertIsNone(row['download_check']['value'])
         self.assertEqual(row['download_check']['state'],'not_displayed')
+        self.assertEqual(clean_description('싸움을 시작\b한다.\n다음 줄'),'싸움을 시작한다.\n다음 줄')
 
     def test_episode_total_is_not_internal_article_number(self):
         row=webtoon_profile({'titleId':1,'titleName':'작품','synopsis':'공식 소개'},
