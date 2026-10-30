@@ -6,6 +6,7 @@ import unicodedata
 from collections import defaultdict
 from metadata import build_rows, empty_metrics, search_tags
 from publishers import publisher_for_work
+from work_profiles import estimated_revenue
 
 FORMAT_LABELS={'독점','단행본','컬러연재','연재','완결','네이버웹툰','웹툰','드라마원작','영화원작'}
 
@@ -90,6 +91,11 @@ def build_works(snapshot,metadata):
         webtoon=next((r for r in sources if r['platform']=='네이버웹툰'),None)
         serial=next((r for r in sources if r['platform']=='네이버시리즈'),None)
         primary=webtoon or serial
+        profile=metadata.get('profiles',{}).get(work_id,{})
+        if profile.get('state')!='confirmed':profile={}
+        if profile:
+            expected=serial if profile.get('platform')=='네이버시리즈' else webtoon
+            if not expected or profile.get('title_id')!=expected['title_id']:profile={}
         publisher=publisher_for_work(webtoon,serial,metadata)
         restricted=restricted_links.get(webtoon['title_id']) if webtoon and not serial else None
         metrics=empty_metrics();provenance={}
@@ -148,6 +154,23 @@ def build_works(snapshot,metadata):
                 src=webtoon if key=='interest' else serial
                 label='미제공' if src.get('observed_at') else src['collection_state']
             work[key+'_display']=label
+        # A fresh profile can fill a formerly empty download field, but cannot
+        # replace an already archived metric (especially for completed works).
+        checked=profile.get('download_check',{}) if serial and profile.get('title_id')==serial['title_id'] else {}
+        if work['downloads'] is None and checked.get('value') is not None:
+            metric={k:checked[k] for k in ('value','display','approximate')}
+            work['metrics']['downloads']=metric;work['downloads']=metric['value']
+            work['downloads_display']=('약 ' if metric['approximate'] else '')+metric['display']
+            work['metric_sources']['downloads']={'platform':'네이버시리즈','title_id':serial['title_id'],'url':profile['source_url'],'observed_at':profile['observed_at']}
+        elif work['downloads'] is None and checked.get('state')=='not_displayed':
+            work['downloads_display']='시리즈 원문 미표시'
+        work['profile']=profile
+        work['tags']=search_tags(work)
+        if work['is_new']:work['tags'].insert(0,'신작')
+        estimate=estimated_revenue(work['downloads'],work['metrics']['downloads'].get('approximate',False))
+        work['estimated_revenue']=estimate['value'];work['estimated_revenue_display']=estimate['display']
+        if work['downloads'] is None and checked.get('state')=='not_displayed':
+            work['estimated_revenue_display']='원문 미표시로 계산 불가'
         works.append(work)
     return sorted(works,key=lambda r:(normalized(r['title']),r['work_id']))
 
@@ -177,13 +200,14 @@ def export_works_excel(works,path):
     from openpyxl.styles import Font, PatternFill
     wb=Workbook();ws=wb.active;ws.title='작품 통합 검색'
     ws.append(['작품 ID','작품명','연재처','작가','장르','관심 수(웹툰)','다운로드 수(시리즈)','댓글 수(시리즈)',
-               '관심 원문','다운로드 원문','댓글 원문','검색 태그','확인 상태','웹툰 링크','시리즈 링크','연결 근거','조회수 공개목록 값','신작','신작 근거','제작사(시리즈 출판사)','연재요일','상태','갱신 정책'])
+               '관심 원문','다운로드 원문','댓글 원문','검색 태그','확인 상태','웹툰 링크','시리즈 링크','연결 근거','조회수 공개목록 값','신작','신작 근거','제작사(시리즈 출판사)','연재요일','상태','갱신 정책','추정수익(원)','추정수익 산식','회차 수','회차 단위','회차·소개 출처','작품 소개'])
     detail=wb.create_sheet('연재처별 원자료')
     detail.append(['통합 작품 ID','연재처','원본 작품 ID','작품명·판본','작가','장르','관심 수','다운로드 수','댓글 수','관측 UTC','출처','공통 작품번호','공식 연결 확인 URL'])
     for w in works:
         ws.append([w['work_id'],w['title'],' / '.join(w['venues']),w['author'],', '.join(w['genres']),
                    w['interest'],w['downloads'],w['comments'],w['interest_display'],w['downloads_display'],w['comments_display'],
-                   ', '.join(w['tags']),w['collection_state'],w['webtoon_url'],w['series_url'],w['link_basis'],w.get('views'),'신작' if w.get('is_new') else '',w.get('new_basis',''),w.get('publisher',''),' / '.join(w.get('serial_days',[])),w['status'],'완결 보관 · 갱신 제외' if w['status']=='완결' else '매주 갱신'])
+                   ', '.join(w['tags']),w['collection_state'],w['webtoon_url'],w['series_url'],w['link_basis'],w.get('views'),'신작' if w.get('is_new') else '',w.get('new_basis',''),w.get('publisher',''),' / '.join(w.get('serial_days',[])),w['status'],'완결 보관 · 갱신 제외' if w['status']=='완결' else '매주 갱신',
+                   w.get('estimated_revenue'),'시리즈 다운로드 × 320원 × 0.9',w.get('profile',{}).get('episode_count'),w.get('profile',{}).get('episode_unit',''),w.get('profile',{}).get('source_url',''),w.get('profile',{}).get('description','')])
         for s in w['sources']:
             detail.append([w['work_id'],s['platform'],s['title_id'],s['title'],s.get('author',''),', '.join(s.get('genres',[])),
                            *[s['metrics'][k]['value'] for k in ('interest','downloads','comments')],s.get('observed_at',''),s['source_url'],s.get('contents_no') or s.get('original_product_id'),s.get('resolution_url','')])
@@ -198,6 +222,7 @@ def export_works_excel(works,path):
                  '시리즈에 여러 판본이 있으면 연재판을 우선하며, 모든 판본의 원자료와 출처는 별도 시트에 보존합니다.',
                  '빈 숫자는 연재처 연결 미확인·미제공·수집 중·공개 접근 제한이며 0이 아닙니다. 연결 미확인은 해당 플랫폼에 미연재라는 뜻이 아닙니다.',
                  '만·억 등 축약된 원문은 근삿값입니다. 태그·최소값 검색도 표시값 환산 기준입니다.',
+                 '추정수익은 시리즈 다운로드 수 × 320원 × 0.9(=다운로드당 288원)라는 사용자 지정 산식입니다. 실제 매출이나 정산액이 아니며 무료 이용·할인·계약 조건을 반영하지 않습니다.',
                  '제작사는 시리즈 페이지의 출판사 기준이며 대표 시리즈 판본을 작품당 한 번만 합산합니다. 미확인 수치는 합계에서 제외합니다.',
                  '완결 작품은 마지막 관측을 보관하며 갱신하지 않습니다. 완결 보관 수치는 제작사 합계에 포함됩니다. 제작사 미확인은 순위 밖의 별도 그룹입니다.']:
         note.append([line])

@@ -43,6 +43,14 @@ def metric_history(work,metadata,snapshot,root=ROOT,allow_legacy=True):
             points[key][stamp]={'observed_at':stamp,'value':value,'display':display,'approximate':approximate,
                                'source_url':url,'platform':platform,'title_id':ident}
     add_details(metadata);add_catalogue(snapshot)
+    # Missing downloads recovered from the source profile keep their own clock.
+    profile=work.get('profile',{});download=profile.get('download_check',{})
+    if (profile.get('platform')=='네이버시리즈' and profile.get('observed_at') and
+        download.get('value') is not None and work.get('metric_sources',{}).get('downloads',{}).get('observed_at')==profile['observed_at']):
+        stamp=profile['observed_at']
+        points['downloads'][stamp]={'observed_at':stamp,'value':download['value'],'display':download.get('display',''),
+            'approximate':download.get('approximate',False),'source_url':profile['source_url'],
+            'platform':profile['platform'],'title_id':profile['title_id']}
     return {key:[rows[t] for t in sorted(rows)] for key,rows in points.items()}
 
 def archive_observation(root,platform,row):

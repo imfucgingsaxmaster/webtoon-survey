@@ -47,6 +47,10 @@ def checked_metadata(value):
 def merge_metadata(*values):
     result={'schema_version':1,'webtoon':{},'series':{},'series_checks':{},'unavailable':{'webtoon':{},'series':{}},'runs':{}}
     for value in values:
+        for ident,row in value.get('profiles',{}).items():
+            old=result.setdefault('profiles',{}).get(ident,{})
+            if row.get('observed_at','')>=old.get('observed_at','') and (row.get('state')=='confirmed' or old.get('state')!='confirmed'):
+                result['profiles'][ident]=copy.deepcopy(row)
         for platform in ('webtoon','series'):
             destination=result.setdefault('publisher_details',{}).setdefault(platform,{})
             for ident,row in value.get('publisher_details',{}).get(platform,{}).items():
@@ -93,8 +97,8 @@ def load_live_metadata(root=ROOT):
 def public_json(url):
     request=urllib.request.Request(url,headers={'User-Agent':'WebtoonRadar/0.4','Accept':'application/json'})
     with urllib.request.build_opener(NoRedirect()).open(request,timeout=20) as response:
-        raw=response.read(15_000_001)
-    if len(raw)>15_000_000:raise ValueError('Public snapshot too large')
+        raw=response.read(30_000_001)
+    if len(raw)>30_000_000:raise ValueError('Public snapshot too large')
     return json.loads(raw)
 
 def sync_history_index(root,base,manifest):

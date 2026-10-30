@@ -15,6 +15,7 @@ from notion_export import export_notion
 from urllib.parse import urlencode
 from catalog_ui import STYLES,card_grid,shelf_works
 from trends import metric_history
+from work_profiles import author_names,works_by_author
 
 st.set_page_config(page_title='Webtoon Radar · 작품 탐색',page_icon='📡',layout='wide',initial_sidebar_state='collapsed')
 st.markdown(STYLES,unsafe_allow_html=True)
@@ -63,6 +64,10 @@ def show_detail(work):
         st.markdown('<p class="radar-kicker">WORK INSIGHT</p>',unsafe_allow_html=True)
         st.title(work['title'])
         st.write(work['author'])
+        names=author_names(work)
+        if names:
+            author_links=''.join(f'<a class="radar-author-link" target="_self" href="{escape("?"+urlencode({"creator":name,"return_work":work["work_id"]}),quote=True)}">{escape(name)}의 작품 보기 ↗</a>' for name in names)
+            st.markdown('<div class="radar-author-links">'+author_links+'</div>',unsafe_allow_html=True)
         labels=[work['status'],*work['genres'],*work['venues']]
         chips=('<span class="radar-chip new">신작</span>' if work['is_new'] else '')+''.join(f'<span class="radar-chip">{escape(x)}</span>' for x in labels)
         st.markdown(chips,unsafe_allow_html=True)
@@ -84,11 +89,27 @@ def show_detail(work):
         b.metric('조회수 · 웹툰 공개 목록',work['views_display'])
         c.metric('다운로드 · 시리즈',work['downloads_display'])
         d.metric('댓글 · 시리즈',work['comments_display'])
+        profile=work.get('profile',{})
+        a,b=st.columns([1,1.6])
+        count=profile.get('episode_count')
+        a.metric('현재 회차 · '+profile.get('platform','원문'),f"총 {count:,}{profile.get('episode_unit','화')}" if count is not None else '회차 정보 확인 중')
+        b.metric('추정수익 · 다운로드 기준',work['estimated_revenue_display'])
+        st.caption('산식: 시리즈 다운로드 수 × 320원 × 0.9 (= 288원/다운로드). 실제 정산액이 아닌 단순 추정치이며 무료 이용·할인·계약 조건 등은 반영하지 않습니다.')
+        if profile.get('latest_episode'):st.caption('최근 등록: '+profile['latest_episode'])
+        if profile:
+            st.caption(f"회차 기준: {profile['platform']} · {korean_time(profile['observed_at'])}. 프롤로그·후기 등이 포함될 수 있으며 다른 플랫폼의 회차 수와 다를 수 있습니다.")
         links=st.columns(3)
         if work['webtoon_url']:links[0].link_button('네이버웹툰에서 보기 ↗',work['webtoon_url'],use_container_width=True)
         if work['series_url']:links[1].link_button('시리즈에서 보기 ↗',work['series_url'],use_container_width=True)
         with links[2]:excel_button([work],'작품 Excel','detail_excel')
     st.caption('관심은 네이버웹툰, 다운로드·댓글은 시리즈의 관측값입니다. 약 표시는 원문 축약값입니다. 조회수는 일부 작품의 공개 목록에만 제공되며 집계 범위는 명시되지 않았습니다.')
+    st.subheader('작품 소개')
+    if profile.get('description'):
+        st.markdown('<div class="radar-synopsis">'+escape(profile['description'])+'</div>',unsafe_allow_html=True)
+        st.link_button(profile['platform']+' 작품 소개 원문 ↗',profile['source_url'])
+    else:st.info('공식 작품 설명을 확인 중입니다. 아래 원문 링크에서 작품 소개를 볼 수 있습니다.')
+    if profile.get('download_check',{}).get('state')=='not_displayed' and work['downloads'] is None:
+        st.caption('시리즈 작품 페이지를 확인했으나 다운로드 숫자가 표시되지 않습니다. 댓글 수나 회차 수를 다운로드로 대신 계산하지 않습니다.')
     if not work['series_url']:
         check=metadata.get('series_checks',{}).get(work['webtoon_id'],{})
         st.info('시리즈 연결 미확인 · '+check.get('reason','공개 공통번호로 연결을 확인하지 못했습니다.')+' 미연재를 의미하지 않습니다.')
@@ -182,6 +203,29 @@ def show_publishers():
         st.markdown('<div class="publisher-table"><table><thead><tr><th>순위</th><th>제작사 · 선택하면 작품 보기</th><th>작품 수</th><th>다운로드 합계</th><th>다운로드 확인</th><th>완결 보관</th></tr></thead><tbody>'+''.join(body)+'</tbody></table></div>',unsafe_allow_html=True)
     st.caption('약 표시는 원문 축약값이 포함된 합계입니다. 미확인 값은 0으로 간주하지 않고 합계에서 제외합니다. 제작사 미확인은 순위에 포함하지 않습니다. 출판사가 실제 제작 스튜디오와 다를 수 있습니다.')
 
+def show_author():
+    name=st.query_params.get('creator','')
+    if st.button('← 돌아가기',key='author_back'):
+        previous=st.query_params.get('return_work','');st.query_params.clear()
+        if previous:st.query_params['work']=previous
+        st.rerun()
+    st.markdown('<p class="radar-kicker">AUTHOR LIBRARY</p>',unsafe_allow_html=True)
+    st.title(name+'의 작품')
+    matched=works_by_author(works,name)
+    finished=sum(w['status']=='완결' for w in matched)
+    st.caption(f'확보한 작품 {len(matched):,}개 · 연재·휴재 {len(matched)-finished:,}개 · 완결 {finished:,}개. 글·그림·원작에 참여한 작가 이름을 기준으로 찾습니다.')
+    selected_shelf=st.radio('작가 작품 범위',['연재·휴재','완결 보관함'],horizontal=True,key='author_shelf')
+    rows=shelf_works(matched,'finished' if selected_shelf=='완결 보관함' else 'ongoing')
+    rows=sorted(rows,key=lambda w:(w['interest'] is None,-(w['interest'] or 0),w['title']))
+    pages=max(1,math.ceil(len(rows)/24));page=min(number_param('page'),pages-1)
+    if rows:st.markdown(card_grid(rows[page*24:(page+1)*24],{'creator':name,'page':page,'return_work':st.query_params.get('return_work','')}),unsafe_allow_html=True)
+    else:st.info('이 범위에서 확인된 작품이 없습니다.')
+    a,b,c=st.columns([1,3,1])
+    if a.button('← 이전',disabled=page==0,key='authorprev'):st.query_params['page']=page-1;st.rerun()
+    b.caption(f'{page+1} / {pages} 페이지 · {len(rows):,}개 작품')
+    if c.button('다음 →',disabled=page==pages-1,key='authornext'):st.query_params['page']=page+1;st.rerun()
+
+
 def show_search():
     st.markdown('<p class="radar-kicker">FIND YOUR NEXT WEBTOON</p>',unsafe_allow_html=True)
     st.title('어떤 웹툰을 찾고 있나요?')
@@ -251,6 +295,7 @@ if selected:
     else:
         st.info('현재 목록에서 해당 작품을 찾지 못했습니다.')
         if st.button('검색 화면 열기'):del st.query_params['work'];st.rerun()
+elif st.query_params.get('creator'):show_author()
 else:show_search()
 
 with st.expander('수집 현황과 자료 안내'):

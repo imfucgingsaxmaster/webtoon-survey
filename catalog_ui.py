@@ -34,6 +34,10 @@ a.radar-card:hover{transform:translateY(-4px)}a.radar-card:focus-visible{outline
 .radar-cover{display:block;width:100%;max-height:430px;object-fit:cover;border-radius:12px}
 .radar-chip{display:inline-block;padding:5px 10px;margin:0 6px 6px 0;background:#e7efe8;border-radius:5px;font-size:12px;color:#3a6251}
 .radar-chip.new{background:#0c9c65;color:white;font-weight:750}
+.radar-author-links{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 12px}
+.radar-author-link{display:inline-block;border:1px solid #c9dbce;border-radius:6px;padding:6px 10px;color:#147353!important;text-decoration:none!important;font-size:13px}
+.radar-author-link:hover{background:#e7efe8}
+.radar-synopsis{white-space:pre-wrap;line-height:1.8;background:white;border:1px solid #dce4de;border-radius:12px;padding:20px 24px;font-size:15px}
 .publisher-table{overflow:auto;max-height:650px;margin:16px 0 24px;border:1px solid #dce4de;border-radius:10px;background:white}
 .publisher-table table{width:100%;border-collapse:collapse;font-size:14px;white-space:nowrap}
 .publisher-table th{position:sticky;top:0;background:#e7efe8;text-align:left;color:#244d3d}

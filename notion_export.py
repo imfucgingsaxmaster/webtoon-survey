@@ -24,7 +24,8 @@ def package_files(works,snapshot):
     known=[g for g in rankings if g['key']]
     headers=['작품명','작품 ID','제작사(시리즈 출판사)','상태','연재요일','연재처','작가','장르','신작',
              '관심 수','다운로드 수','댓글 수','다운로드 원문','다운로드 근삿값',
-             '웹툰 관측 UTC','시리즈 관측 UTC','웹툰 링크','시리즈 링크','대시보드 링크','갱신 정책']
+             '웹툰 관측 UTC','시리즈 관측 UTC','웹툰 링크','시리즈 링크','대시보드 링크','갱신 정책',
+             '추정수익(원)','추정수익 산식','회차 수','회차 단위','작품 소개','소개·회차 출처','소개·회차 관측 UTC']
     rows=[]
     from urllib.parse import urlencode
     for w in works:
@@ -33,7 +34,9 @@ def package_files(works,snapshot):
             w['interest'],w['downloads'],w['comments'],w['downloads_display'],bool(w['metrics']['downloads'].get('approximate')),
             w['metric_sources'].get('interest',{}).get('observed_at',''),w['metric_sources'].get('downloads',{}).get('observed_at',''),
             w['webtoon_url'],w['series_url'],DASHBOARD+'?'+urlencode({'work':w['work_id']}),
-            '완결 보관 · 갱신 제외' if w['status']=='완결' else '매주 월요일 갱신'])
+            '완결 보관 · 갱신 제외' if w['status']=='완결' else '매주 월요일 갱신',
+            w.get('estimated_revenue'),'시리즈 다운로드 × 320원 × 0.9',w.get('profile',{}).get('episode_count'),
+            w.get('profile',{}).get('episode_unit',''),w.get('profile',{}).get('description',''),w.get('profile',{}).get('source_url',''),w.get('profile',{}).get('observed_at','')])
     rank_headers=['제작사(시리즈 출판사)','작품 수','연재·휴재','완결','다운로드 합계','다운로드 확인 작품 수','근삿값 포함']
     rank_rows=[[g['publisher'],g['works'],g['ongoing'],g['finished'],g['downloads'],g['downloads_known'],g['approximate']] for g in rankings]
     finished=sum(w['status']=='완결' for w in works)
@@ -62,7 +65,7 @@ def package_files(works,snapshot):
 
 ## 작품 검색과 자료 활용
 
-대시보드에서 표지를 선택하면 관심 수·다운로드·댓글과 실제 관측 변화 그래프, 연재요일, 공식 작품 링크를 볼 수 있습니다. ‘제작사별’에서 작품 수 또는 다운로드 합계를 기준으로 정렬하고 작품 목록을 열 수 있습니다.
+대시보드에서 표지를 선택하면 관심 수·다운로드·댓글과 실제 관측 변화 그래프, 연재요일, 공식 작품 소개·회차, 작가의 다른 작품, 추정수익을 볼 수 있습니다. 추정수익은 다운로드 × 320원 × 0.9로 계산하며 실제 매출·정산액이 아닙니다. ‘제작사별’에서 작품 수 또는 다운로드 합계를 기준으로 정렬하고 작품 목록을 열 수 있습니다.
 
 ## 노션으로 가져오기
 
