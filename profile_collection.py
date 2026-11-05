@@ -55,11 +55,8 @@ def collect_profiles(root=ROOT,limit=None,refresh=False,publish=False,platform='
         save_metadata(current,path)
         print(json.dumps(current['runs']['profiles']),flush=True)
         if publish:
-            import subprocess
-            def git(*args):return subprocess.run(['git',*args],cwd=root,check=True)
-            git('add','metadata_latest.json')
-            if subprocess.run(['git','diff','--cached','--quiet'],cwd=root).returncode==1:
-                git('commit','-m','data: update source descriptions and episode totals');git('pull','--rebase','origin','main');git('push','origin','HEAD:main')
+            from data_publish import publish_data
+            publish_data(root,'data: update source descriptions and episode totals')
     with ThreadPoolExecutor(max_workers=3) as pool:
         for offset in range(0,len(targets),100):
             if series.stopped.is_set() or webtoon.stopped.is_set():break

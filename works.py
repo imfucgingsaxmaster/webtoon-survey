@@ -174,11 +174,12 @@ def build_works(snapshot,metadata):
         works.append(work)
     return sorted(works,key=lambda r:(normalized(r['title']),r['work_id']))
 
-def filter_works(works,query='',tags=(),mode='모두 포함',minimums=None,venues=()):
-    wanted=set(tags);query=search_text(query);selected=set(venues)
+def filter_works(works,query='',tags=(),mode='모두 포함',minimums=None,venues=(),genres=(),genre_mode='any'):
+    wanted=set(tags);query=search_text(query);selected=set(venues);selected_genres=set(genres)
     result=[]
     for work in works:
         if selected and not selected & set(work['venues']):continue
+        if selected_genres and not (selected_genres<=set(work['genres']) if genre_mode=='all' else bool(selected_genres & set(work['genres']))):continue
         if wanted and not (wanted<=set(work['tags']) if mode=='모두 포함' else bool(wanted & set(work['tags']))):continue
         fields=[work['title'],work.get('author',''),work.get('publisher',''),*work['aliases'],*work['tags']]
         if query and not any(query in search_text(field) for field in fields):continue

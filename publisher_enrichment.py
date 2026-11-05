@@ -133,14 +133,8 @@ def collect_publishers(root=ROOT,limit=None,workers=3,batch_size=100,publish=Fal
         save_metadata(current,path)
         print(json.dumps(current['runs']['publishers'],ensure_ascii=False),flush=True)
         if publish:
-            import subprocess
-            def git(*args):return subprocess.run(['git',*args],cwd=root,check=True)
-            git('add','metadata_latest.json')
-            changed=subprocess.run(['git','diff','--cached','--quiet'],cwd=root).returncode
-            if changed==1:
-                git('commit','-m','data: fill official Series publishers without refreshing archived metrics')
-                git('pull','--rebase','origin','main');git('push','origin','HEAD:main')
-            elif changed:raise RuntimeError('Unable to inspect publisher checkpoint')
+            from data_publish import publish_data
+            publish_data(root,'data: fill official Series publishers without refreshing archived metrics')
     checkpoint('running' if targets else 'complete')
     with ThreadPoolExecutor(max_workers=max(1,min(workers,3))) as pool:
         for offset in range(0,len(targets),batch_size):

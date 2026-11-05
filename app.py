@@ -245,6 +245,9 @@ def show_search():
         a,b,c=st.columns([2,2,1])
         all_genres=sorted({g for w in pool for g in w['genres']})
         genres=a.multiselect('장르',all_genres,default=[g for g in read_list('genres') if g in all_genres])
+        genre_mode=a.radio('장르 선택 조건',['all','any'],index=1 if st.query_params.get('genre_mode')=='any' else 0,
+            format_func=lambda value:'모두 포함 (AND)' if value=='all' else '하나라도 포함 (OR)',horizontal=True,
+            help='판타지와 액션을 선택하고 모두 포함으로 검색하면 두 장르가 함께 있는 작품만 표시합니다.')
         all_tags=sorted({t for w in pool for t in w['tags'] if not t.startswith('장르:')})
         tags=b.multiselect('태그 · 모두 포함',all_tags,default=[t for t in read_list('tags') if t in all_tags])
         new_only=c.checkbox('신작만 보기',value=shelf!='finished' and st.query_params.get('new')=='1',disabled=shelf=='finished',help='네이버웹툰이 공식 신작으로 표시한 작품입니다. 완결 보관함에는 적용하지 않습니다.')
@@ -258,9 +261,8 @@ def show_search():
                       'downloads':m2.number_input('다운로드 수 이상',min_value=0,value=number_param('min_downloads'),step=100000),
                       'comments':m3.number_input('댓글 수 이상',min_value=0,value=number_param('min_comments'),step=1000)}
             st.caption('0은 조건을 적용하지 않습니다. 값이 없는 작품은 숫자 조건 검색에서 제외됩니다.')
-    view=filter_works(pool,query,tags,minimums=minimums,venues=venues)
+    view=filter_works(pool,query,tags,minimums=minimums,venues=venues,genres=genres,genre_mode=genre_mode)
     if author:view=[w for w in view if search_text(author) in search_text(w['author'])]
-    if genres:view=[w for w in view if set(genres)&set(w['genres'])]
     if new_only:view=[w for w in view if w['is_new']]
     if day!='전체':
         ids={m['title_id'] for m in snapshot['memberships'] if m['group']==day};view=[w for w in view if w['webtoon_id'] in ids]
@@ -271,6 +273,7 @@ def show_search():
     sortkey={'관심 수 높은 순':'interest','다운로드 수 높은 순':'downloads','댓글 수 높은 순':'comments','작품명 순':'title'}[sort]
     view=sorted(view,key=lambda w:w['title'] if sortkey=='title' else (w[sortkey] is None,-(w[sortkey] or 0),w['title']))
     context={'q':query,'author':author,'shelf':shelf,'new':'1' if new_only else '0','genres':json.dumps(genres,ensure_ascii=False),'tags':json.dumps(tags,ensure_ascii=False)}
+    context['genre_mode']=genre_mode
     context.update(day=day,venues=json.dumps(venues,ensure_ascii=False),sort=sort,**{'min_'+k:v for k,v in minimums.items()})
     try:page=max(0,int(st.query_params.get('page','0')))
     except ValueError:page=0

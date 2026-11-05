@@ -29,14 +29,8 @@ def save_checkpoint(root,snapshot,started,state,refresh_since=None):
 def publish_checkpoint(root):
     from history_index import build_index
     build_index(root)
-    def git(*args,**kwargs):return subprocess.run(['git',*args],cwd=root,check=True,**kwargs)
-    git('add','metadata_latest.json','metadata_history/','history_index.json.gz')
-    changed=subprocess.run(['git','diff','--cached','--quiet'],cwd=root).returncode
-    if changed==1:
-        git('commit','-m','data: publish Series link checkpoint')
-        git('pull','--rebase','origin','main')
-        git('push','origin','HEAD:main')
-    elif changed:raise RuntimeError('Unable to inspect staged checkpoint')
+    from data_publish import publish_data
+    publish_data(root,'data: publish Series link checkpoint')
 
 def collect_links(root=ROOT,limit=200,all_pending=False,publish=False,refresh_since=None):
     root=Path(root)
