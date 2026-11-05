@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: '17 0 * * 1' # Monday 09:17 Asia/Seoul
   workflow_dispatch:
+    inputs:
+      refresh_since:
+        description: 'Resume a refresh from its UTC start time (leave empty for a new refresh)'
+        required: false
+        type: string
   push:
     branches: [main]
     paths: ['*.py', 'requirements.txt', '.github/workflows/weekly.yml']
@@ -43,7 +48,21 @@ jobs:
       - name: Install Korean font
         run: sudo apt-get update -qq && sudo apt-get install -y fonts-nanum
       - name: Set one observation boundary for the entire refresh
-        run: echo "RADAR_REFRESH_SINCE=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >> "$GITHUB_ENV"
+        env:
+          REQUESTED_REFRESH_SINCE: ${{ inputs.refresh_since }}
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime, timezone
+          from metadata import refresh_boundary
+          now = datetime.now(timezone.utc)
+          requested = os.environ.get('REQUESTED_REFRESH_SINCE', '').strip()
+          start = refresh_boundary(requested) if requested else now
+          if start > now:
+              raise ValueError('Refresh start cannot be in the future')
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              out.write('RADAR_REFRESH_SINCE=' + start.isoformat(timespec='seconds') + '\n')
+          PY
       - name: Refresh ongoing catalogue and preserve completed archive
         id: catalogue
         run: python radar.py
