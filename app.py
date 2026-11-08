@@ -125,7 +125,9 @@ def show_detail(work):
         st.info(f'{selected_metric}의 공개 관측값이 아직 없습니다. 값이 확인되면 이곳에 그래프가 나타납니다.')
     else:
         df=pd.DataFrame(points)
-        df['관측 시각']=pd.to_datetime(df['observed_at'],utc=True).dt.tz_convert('Asia/Seoul').dt.tz_localize(None)
+        # Collectors use seconds/+00:00; browser observations use milliseconds/Z.
+        # Both are ISO 8601: do not infer one exact format from the first point.
+        df['관측 시각']=pd.to_datetime(df['observed_at'],format='ISO8601',utc=True).dt.tz_convert('Asia/Seoul').dt.tz_localize(None)
         df['원문']=df.apply(lambda r:('약 ' if r['approximate'] else '')+r['display'],axis=1)
         chart=alt.Chart(df).mark_line(point=alt.OverlayMarkDef(size=65),color='#15966f',strokeWidth=3).encode(
             x=alt.X('관측 시각:T',title='관측 시각 · 한국시간',axis=alt.Axis(format='%m/%d %H:%M')),
