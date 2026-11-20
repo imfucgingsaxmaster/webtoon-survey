@@ -32,17 +32,11 @@ def compare_days(points,as_of,days):
 def growth_rankings(works,index,as_of,metric='downloads',days=7):
     if metric not in METRICS or days not in (1,7):raise ValueError('Unsupported ranking')
     if isinstance(as_of,str):as_of=date.fromisoformat(as_of)
-    rows=[];missing=[];sources=(index or {}).get('sources',{})
+    rows=[];missing=[]
     for work in works:
         if work.get('status')=='완결':continue
         source=work.get('metric_sources',{}).get(metric,{})
-        platform={'네이버웹툰':'webtoon','네이버시리즈':'series'}.get(source.get('platform'))
-        ident=source.get('title_id')
-        raw=list(sources.get(f'{platform}:{ident}',{}).get(metric,[])) if platform and ident else []
-        current=work.get('metrics',{}).get(metric,{})
-        if platform and ident and source.get('observed_at') and current.get('value') is not None:
-            raw.append([source['observed_at'],current['value'],current.get('display',''),current.get('approximate',False)])
-        points=daily_points(raw)
+        points=work_points(work,index,metric)
         daily=compare_days(points,as_of,1);weekly=compare_days(points,as_of,7)
         comparison=daily if days==1 else weekly
         row={'work':work,'daily':daily,'weekly':weekly,'comparison':comparison,'source':source}
@@ -55,3 +49,21 @@ def growth_rankings(works,index,as_of,metric='downloads',days=7):
         row['rank']=rank;previous=value
     return {'as_of':as_of,'start_day':as_of-timedelta(days=days),'metric':metric,'days':days,
             'rows':rows,'missing':missing}
+
+def work_points(work,index,metric):
+    source=work.get('metric_sources',{}).get(metric,{})
+    platform={'네이버웹툰':'webtoon','네이버시리즈':'series'}.get(source.get('platform'))
+    ident=source.get('title_id')
+    raw=list((index or {}).get('sources',{}).get(f'{platform}:{ident}',{}).get(metric,[])) if platform and ident else []
+    current=work.get('metrics',{}).get(metric,{})
+    if platform and ident and source.get('observed_at') and current.get('value') is not None:
+        raw.append([source['observed_at'],current['value'],current.get('display',''),current.get('approximate',False)])
+    return daily_points(raw)
+
+def available_dates(works,index,latest,metric,days):
+    ready=set()
+    for work in works:
+        if work.get('status')=='완결':continue
+        points=work_points(work,index,metric)
+        ready.update(day for day in points if day<=latest and day-timedelta(days=days) in points)
+    return sorted(ready,reverse=True)

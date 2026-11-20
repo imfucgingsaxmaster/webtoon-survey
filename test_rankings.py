@@ -1,5 +1,6 @@
 import unittest
-from rankings import daily_points,growth_rankings
+from rankings import daily_points,growth_rankings,available_dates
+from datetime import date
 
 def work(ident,status='연재',source=None):
     return {'work_id':'webtoon:'+ident,'title':'작품 '+ident,'status':status,'metrics':{},
@@ -9,6 +10,10 @@ def point(day,value,approximate=False):
     return [f'2026-11-{day:02}T01:00:00+00:00',value,str(value),approximate]
 
 class RankingTests(unittest.TestCase):
+    def test_latest_comparable_date_is_explicit_without_filling_missing_days(self):
+        index={'sources':{'series:1':{'downloads':[point(9,100),point(16,120),point(20,130)]}}}
+        self.assertEqual(available_dates([work('1')],index,date(2026,11,20),'downloads',7),[date(2026,11,16)])
+        self.assertEqual(available_dates([work('1')],index,date(2026,11,20),'downloads',1),[])
     def test_daily_and_weekly_are_endpoint_deltas_not_sum_of_snapshots(self):
         index={'sources':{'series:1':{'downloads':[point(13,100),point(19,130),point(20,150),
             ['2026-11-20T02:00:00.123Z',160,'160',False]]}}}

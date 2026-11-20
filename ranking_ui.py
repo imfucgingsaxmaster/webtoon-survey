@@ -1,12 +1,13 @@
 """Ranking shelf: daily and seven-day changes, with transparent missing data."""
 from html import escape
+from datetime import date
 from urllib.parse import urlencode
 
 import pandas as pd
 import streamlit as st
 from history_index import load_index
 from radar import public_cover_url
-from rankings import growth_rankings,local_day
+from rankings import growth_rankings,local_day,available_dates
 
 def change_label(comparison):
     if comparison['delta'] is None:return '비교 자료 부족'
@@ -16,7 +17,8 @@ def ranking_table(result,limit):
     body=[]
     for row in result['rows'][:limit]:
         work=row['work'];comparison=row['comparison']
-        href='?'+urlencode({'shelf':'rankings','rank_period':result['days'],'rank_metric':result['metric'],'work':work['work_id']})
+        href='?'+urlencode({'shelf':'rankings','rank_period':result['days'],'rank_metric':result['metric'],
+                           'rank_date':result.get('date_selection','latest'),'work':work['work_id']})
         cover=public_cover_url(work.get('cover_url'))
         image=(f'<img src="{escape(cover,quote=True)}" alt="" loading="lazy" referrerpolicy="no-referrer" '
                'style="width:44px;height:58px;object-fit:cover;border-radius:5px;margin-right:10px;vertical-align:middle">') if cover else ''
@@ -45,9 +47,18 @@ def show_rankings(works,snapshot):
     limit=c.selectbox('표시 작품 수',[30,50,100],key='rank_limit')
     days=1 if period=='일일' else 7;metric='interest' if metric_label=='관심 수 증가량' else 'downloads'
     st.query_params['rank_period']=str(days);st.query_params['rank_metric']=metric
-    as_of=local_day(snapshot['observed_at'])
-    result=growth_rankings(works,load_index(),as_of,metric,days)
+    latest=local_day(snapshot['observed_at']);index=load_index()
+    ready=available_dates(works,index,latest,metric,days)
+    choices=['latest']+[d.isoformat() for d in sorted({latest,*ready},reverse=True)]
+    requested=st.query_params.get('rank_date','latest')
+    selection=st.selectbox('랭킹 기준일',choices,index=choices.index(requested) if requested in choices else 0,
+        format_func=lambda d:'최신 집계 가능한 날짜' if d=='latest' else d,key=f'rank_date_{metric}_{days}')
+    st.query_params['rank_date']=selection
+    as_of=(ready[0] if ready else latest) if selection=='latest' else date.fromisoformat(selection)
+    result=growth_rankings(works,index,as_of,metric,days);result['date_selection']=selection
     st.write(f'**비교 기준: {result["start_day"]:%Y.%m.%d} → {as_of:%Y.%m.%d} · 한국시간**')
+    if selection=='latest' and as_of<latest:
+        st.info(f'최신 수집일 {latest:%m/%d}에는 비교할 두 날짜의 자료가 부족해, 가장 최근 집계 가능한 {as_of:%m/%d} 기준 순위를 표시합니다. 위에서 기준일을 직접 선택할 수 있습니다.')
     a,b=st.columns(2)
     a.metric('순위 집계 작품',f'{len(result["rows"]):,}개')
     b.metric('비교 자료 부족',f'{len(result["missing"]):,}개')
