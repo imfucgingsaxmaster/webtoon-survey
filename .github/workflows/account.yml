@@ -1,0 +1,82 @@
+name: Series account supplement
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['Weekly Webtoon Radar']
+    types: [completed]
+permissions:
+  contents: write
+jobs:
+  supplement:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    concurrency:
+      group: webtoon-radar
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check account configuration without exposing credentials
+        id: account
+        env:
+          NAVER_ID: ${{ secrets.NAVER_ID }}
+          NAVER_PASSWORD: ${{ secrets.NAVER_PASSWORD }}
+        run: |
+          if [ -n "$NAVER_ID" ] && [ -n "$NAVER_PASSWORD" ]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            echo 'Series supplement skipped: add NAVER_ID and NAVER_PASSWORD repository secrets to enable it. Public refresh is unaffected.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.account.outputs.configured == 'true'
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        if: steps.account.outputs.configured == 'true'
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Prepare ordinary browser and report dependencies
+        if: steps.account.outputs.configured == 'true'
+        run: |
+          pip install -r requirements.txt 'playwright>=1.49,<2'
+          python -m playwright install --with-deps chromium
+          sudo apt-get update -qq && sudo apt-get install -y fonts-nanum
+      - name: Supplement only unavailable active Series titles
+        if: steps.account.outputs.configured == 'true'
+        env:
+          NAVER_ID: ${{ secrets.NAVER_ID }}
+          NAVER_PASSWORD: ${{ secrets.NAVER_PASSWORD }}
+          DEBUG: ''
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python series_account.py --publish
+      - name: Export the latest preserved observations
+        if: always() && steps.account.outputs.configured == 'true'
+        run: |
+          python history_index.py
+          python radar.py --offline
+          python notion_export.py
+      - name: Save research outputs only
+        if: always() && steps.account.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: webtoon-radar-supplement-${{ github.run_number }}
+          path: outputs/
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Report supplement outcome
+        if: always() && steps.account.outputs.configured == 'true'
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          print('### Series supplement\n```json')
+          print(json.dumps(json.load(open('metadata_latest.json')).get('runs', {}).get('series_account', {}), ensure_ascii=False, indent=2))
+          print('```')
+          PY
