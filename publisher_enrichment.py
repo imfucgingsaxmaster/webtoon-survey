@@ -44,7 +44,10 @@ class PacedClient:
             with urllib.request.build_opener(NoRedirect()).open(request,timeout=20) as response:
                 raw=response.read(12_000_001)
         except urllib.error.HTTPError as exc:
-            if exc.code in (401,403,429):self.stopped.set()
+            # A title-specific login requirement is not a host-wide ban.
+            # Never retry the protected title; keep the circuit breaker for
+            # forbidden/rate-limited responses from this host.
+            if exc.code in (403,429):self.stopped.set()
             raise
         if len(raw)>12_000_000:raise ValueError('Unexpected response size')
         return raw.decode('utf-8')

@@ -47,6 +47,10 @@ def checked_metadata(value):
 def merge_metadata(*values):
     result={'schema_version':1,'webtoon':{},'series':{},'series_checks':{},'unavailable':{'webtoon':{},'series':{}},'runs':{}}
     for value in values:
+        for ident,row in value.get('profile_checks',{}).items():
+            old=result.setdefault('profile_checks',{}).get(ident)
+            if not old or datetime.fromisoformat(row['observed_at'])>=datetime.fromisoformat(old['observed_at']):
+                result['profile_checks'][ident]=copy.deepcopy(row)
         for ident,row in value.get('profiles',{}).items():
             old=result.setdefault('profiles',{}).get(ident,{})
             if row.get('observed_at','')>=old.get('observed_at','') and (row.get('state')=='confirmed' or old.get('state')!='confirmed'):
