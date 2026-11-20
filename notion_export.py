@@ -34,7 +34,7 @@ def package_files(works,snapshot):
             w['interest'],w['downloads'],w['comments'],w['downloads_display'],bool(w['metrics']['downloads'].get('approximate')),
             w['metric_sources'].get('interest',{}).get('observed_at',''),w['metric_sources'].get('downloads',{}).get('observed_at',''),
             w['webtoon_url'],w['series_url'],DASHBOARD+'?'+urlencode({'work':w['work_id']}),
-            '완결 보관 · 갱신 제외' if w['status']=='완결' else '매주 월요일 갱신',
+            '완결 보관 · 갱신 제외' if w['status']=='완결' else '매일 갱신',
             w.get('estimated_revenue'),'시리즈 다운로드 × 320원 × 0.9',w.get('profile',{}).get('episode_count'),
             w.get('profile',{}).get('episode_unit',''),w.get('profile',{}).get('description',''),w.get('profile',{}).get('source_url',''),w.get('profile',{}).get('observed_at','')])
     rank_headers=['제작사(시리즈 출판사)','작품 수','연재·휴재','완결','다운로드 합계','다운로드 확인 작품 수','근삿값 포함']
@@ -51,7 +51,7 @@ def package_files(works,snapshot):
 - 목록 관측 UTC: {observed}
 - 통합 작품 {len(works):,}개, 연재·휴재 {len(works)-finished:,}개, 완결 보관 {finished:,}개
 - 제작사 확인 {sum(g['works'] for g in known):,}개 / {len(works):,}개, {len(known):,}개 제작사
-- 연재·휴재는 매주 월요일 09:17 한국시간에 갱신합니다. 완결 작품의 수치는 마지막 관측을 보존하며, 누락 출판사만 별도 보완합니다.
+- 연재·휴재는 매일 09:17 한국시간에 갱신합니다. 완결 작품의 수치는 마지막 관측을 보존하며, 누락 출판사만 별도 보완합니다.
 
 ## 제작사별 다운로드 순위
 

@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 from catalog_ui import STYLES,card_grid,shelf_works
 from trends import metric_history
 from work_profiles import author_names,works_by_author
+from ranking_ui import show_rankings
 
 st.set_page_config(page_title='Webtoon Radar · 작품 탐색',page_icon='📡',layout='wide',initial_sidebar_state='collapsed')
 st.markdown(STYLES,unsafe_allow_html=True)
@@ -53,7 +54,7 @@ if weekly_run.get('refresh_since'):
     st.caption(f"최근 갱신 시작 {korean_time(weekly_run['refresh_since'])} · 연재·휴재 갱신 / 완결 작품은 마지막 자료 보관")
 
 def show_detail(work):
-    if st.button('← 검색 화면으로',key='back'):
+    if st.button('← 랭킹으로' if st.query_params.get('shelf')=='rankings' else '← 검색 화면으로',key='back'):
         del st.query_params['work'];st.rerun()
     left,right=st.columns([1,2.8],gap='large')
     with left:
@@ -116,7 +117,7 @@ def show_detail(work):
     elif work['series_link_state']=='linked_restricted':
         st.info('시리즈 연결은 확인했습니다. 해당 시리즈 작품의 상세 정보에 로그인이 필요해 다운로드·댓글 수를 가져올 수 없습니다. 위의 ‘시리즈에서 보기’로 작품을 열 수 있습니다.')
     st.divider();st.subheader('숫자로 보는 작품의 변화')
-    st.caption('실제로 수집한 시각의 값을 연결합니다. 완결 작품은 마지막 관측까지 보관하며 추가 갱신하지 않습니다.' if work['status']=='완결' else '실제로 수집한 시각의 값을 연결합니다. 매주 관측이 쌓이면 더 긴 흐름을 볼 수 있습니다.')
+    st.caption('실제로 수집한 시각의 값을 연결합니다. 완결 작품은 마지막 관측까지 보관하며 추가 갱신하지 않습니다.' if work['status']=='완결' else '실제로 수집한 시각의 값을 연결합니다. 매일 관측이 쌓이면 더 긴 흐름을 볼 수 있습니다.')
     history=metric_history(work,metadata,snapshot,allow_legacy=False)
     metric_labels={'관심 수':'interest','조회수':'views','시리즈 다운로드':'downloads','시리즈 댓글':'comments'}
     selected_metric=st.radio('변화 지표',list(metric_labels),horizontal=True,label_visibility='collapsed',key='trend_metric')
@@ -232,12 +233,13 @@ def show_search():
     st.markdown('<p class="radar-kicker">FIND YOUR NEXT WEBTOON</p>',unsafe_allow_html=True)
     st.title('어떤 웹툰을 찾고 있나요?')
     st.markdown('<div class="radar-sub">표지로 만나고, 데이터로 살펴보세요. 같은 작품의 웹툰과 시리즈 정보를 한곳에서 확인합니다.</div>',unsafe_allow_html=True)
-    labels=['연재·휴재','완결 보관함','제작사별'];shelves=['ongoing','finished','publishers']
+    labels=['연재·휴재','완결 보관함','제작사별','성장 랭킹'];shelves=['ongoing','finished','publishers','rankings']
     selected_shelf=st.query_params.get('shelf','ongoing')
     shelf_label=st.radio('작품 서가',labels,index=shelves.index(selected_shelf) if selected_shelf in shelves else 0,horizontal=True,key='shelf',label_visibility='collapsed')
     shelf=shelves[labels.index(shelf_label)]
     st.query_params['shelf']=shelf
     if shelf=='publishers':show_publishers();return
+    if shelf=='rankings':show_rankings(works,snapshot);return
     pool=shelf_works(works,shelf)
     with st.form('search',border=True):
         a,b,c=st.columns([3,1.5,0.7],vertical_alignment='bottom')
@@ -308,11 +310,11 @@ with st.expander('수집 현황과 자료 안내'):
     st.write(f"네이버웹툰 {len(snapshot['titles']):,}개 · 상세 확인 {known:,}개 · 시리즈 공개 작품 {len(metadata['series']):,}개")
     coverage=series_coverage(snapshot,metadata)
     st.progress(coverage['checked']/max(coverage['total'],1),text=f"연재·휴재 시리즈 연결 조사 {coverage['checked']:,} / {coverage['total']:,}개 · 공식 연결 확인 {coverage['linked']:,}개 · 지표 접근 제한 {coverage['restricted']:,}개")
-    st.caption('목록 관측 '+korean_time(snapshot['observed_at'])+' · 매주 월요일 09:17 자동 실행')
+    st.caption('목록 관측 '+korean_time(snapshot['observed_at'])+' · 매일 09:17 자동 실행')
     for platform,label in [('webtoon','웹툰'),('series','시리즈')]:
         stamps=[r['observed_at'] for r in metadata.get(platform,{}).values() if r.get('observed_at')]
         if stamps:st.caption(f"{label} 상세 지표 실제 관측 범위: {korean_time(min(stamps))} ~ {korean_time(max(stamps))}")
-    st.caption('연재·휴재 작품은 주간 수집에서 시리즈 연결과 지표를 갱신합니다. 완결 작품의 목록·지표·연결은 마지막 관측을 보존합니다. 검색과 상세 화면은 저장된 자료를 즉시 표시합니다. 네이버웹툰에 없는 시리즈 전체 카탈로그까지 확보했다는 뜻은 아닙니다.')
+    st.caption('연재·휴재 작품은 매일 시리즈 연결과 지표를 갱신합니다. 완결 작품의 목록·지표·연결은 마지막 관측을 보존합니다. 검색과 상세 화면은 저장된 자료를 즉시 표시합니다. 네이버웹툰에 없는 시리즈 전체 카탈로그까지 확보했다는 뜻은 아닙니다.')
     st.caption('과거 값은 실제 관측만 보존합니다. 관심·조회수·다운로드는 서로 다른 지표이며 합산하지 않습니다. 자료 없음은 0이나 미연재를 뜻하지 않습니다.')
     st.link_button('GitHub 저장소와 실행 기록 ↗','https://github.com/imfucgingsaxmaster/webtoon-survey')
     if st.button('최신 공개 데이터 가져오기'):
