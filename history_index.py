@@ -32,6 +32,17 @@ def build_index(root=ROOT,persist=True):
             for ident,row in value.get(platform,{}).items():
                 for metric,data in row.get('metrics',{}).items():
                     point(f'{platform}:{ident}',metric,row.get('observed_at'),data.get('value'),data.get('display',''),data.get('approximate',False))
+        # Profile-only recovery uses its own observation clock. Preserve these
+        # missing-metric observations too, so the next daily comparison has a
+        # baseline after the current profile is replaced by a newer one.
+        for profile in value.get('profiles',{}).values():
+            ident=profile.get('title_id')
+            if profile.get('platform')!='네이버시리즈' or not ident:continue
+            primary=value.get('series',{}).get(ident,{}).get('metrics',{}).get('downloads',{})
+            recovered=profile.get('download_check',{})
+            if primary.get('value') is None and recovered.get('value') is not None:
+                point('series:'+ident,'downloads',profile.get('observed_at'),recovered['value'],
+                      recovered.get('display',''),recovered.get('approximate',False))
     def catalogue(value):
         for row in value.get('titles',[]):
             count=row.get('public_views')

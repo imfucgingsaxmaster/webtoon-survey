@@ -1,4 +1,7 @@
 import unittest
+import json
+import tempfile
+from pathlib import Path
 from rankings import daily_points,growth_rankings,available_dates
 from datetime import date
 
@@ -10,6 +13,18 @@ def point(day,value,approximate=False):
     return [f'2026-11-{day:02}T01:00:00+00:00',value,str(value),approximate]
 
 class RankingTests(unittest.TestCase):
+    def test_profile_only_downloads_survive_the_next_daily_refresh(self):
+        from history_index import build_index
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            for day,value in [(19,100),(20,130)]:
+                data={'series':{'1':{'metrics':{}}},'profiles':{'webtoon:1':{'platform':'네이버시리즈',
+                      'title_id':'1','observed_at':point(day,value)[0],
+                      'download_check':{'value':value,'display':str(value),'approximate':False}}}}
+                (root/'metadata_latest.json').write_text(json.dumps(data))
+                index=build_index(root)
+            result=growth_rankings([work('1')],index,'2026-11-20',days=1)
+            self.assertEqual(result['rows'][0]['daily']['delta'],30)
     def test_latest_comparable_date_is_explicit_without_filling_missing_days(self):
         index={'sources':{'series:1':{'downloads':[point(9,100),point(16,120),point(20,130)]}}}
         self.assertEqual(available_dates([work('1')],index,date(2026,11,20),'downloads',7),[date(2026,11,16)])
