@@ -97,7 +97,7 @@ jobs:
       - name: Verify actual observations belong to this refresh
         run: python verify_refresh.py --refresh-since "$RADAR_REFRESH_SINCE"
       - name: Refresh descriptions and episode totals for ongoing works
-        run: python profile_collection.py --refresh --publish
+        run: python profile_collection.py --refresh --publish --refresh-since "$RADAR_REFRESH_SINCE"
       - name: Export catalogue and searchable metrics
         if: always() && steps.catalogue.outcome == 'success'
         run: |
@@ -127,7 +127,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
       - name: Run summary
+        if: always() && steps.catalogue.outcome == 'success'
         run: |
           echo '### Webtoon Radar public catalogue' >> "$GITHUB_STEP_SUMMARY"
           echo 'Real public metadata only. Research PDFs are not data inputs.' >> "$GITHUB_STEP_SUMMARY"
           cat outputs/summary.json >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          data = json.load(open('metadata_latest.json'))
+          print('\n### Actual observation checks\n')
+          print('```json')
+          print(json.dumps({k: data.get('runs', {}).get(k, {}) for k in ('weekly_verification', 'profiles')}, ensure_ascii=False, indent=2))
+          print('```')
+          PY
