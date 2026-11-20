@@ -1,15 +1,45 @@
 name: Series account supplement
 on:
   workflow_dispatch:
+    inputs:
+      login_check:
+        description: 'Check sign-in only (does not change catalogue data)'
+        type: boolean
+        default: false
   workflow_run:
     workflows: ['Weekly Webtoon Radar']
     types: [completed]
 permissions:
   contents: write
 jobs:
+  check_login:
+    if: github.event_name == 'workflow_dispatch' && inputs.login_check
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Prepare ordinary browser
+        run: |
+          pip install -r requirements.txt 'playwright>=1.49,<2'
+          python -m playwright install --with-deps chromium
+      - name: Check sign-in once without saving account data
+        env:
+          NAVER_ID: ${{ secrets.NAVER_ID }}
+          NAVER_PASSWORD: ${{ secrets.NAVER_PASSWORD }}
+          DEBUG: ''
+        run: python series_account.py --check-login
   supplement:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && !inputs.login_check) ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event != 'push' &&
        github.event.workflow_run.head_branch == 'main' &&
