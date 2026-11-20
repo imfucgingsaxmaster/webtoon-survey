@@ -7,7 +7,7 @@ on:
         type: boolean
         default: false
   workflow_run:
-    workflows: ['Weekly Webtoon Radar']
+    workflows: ['Daily Webtoon Radar', 'Weekly Webtoon Radar']
     types: [completed]
 permissions:
   contents: write

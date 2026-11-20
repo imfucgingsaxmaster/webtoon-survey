@@ -1,7 +1,7 @@
-name: Weekly Webtoon Radar
+name: Daily Webtoon Radar
 on:
   schedule:
-    - cron: '17 0 * * 1' # Monday 09:17 Asia/Seoul
+    - cron: '17 0 * * *' # Every day 09:17 Asia/Seoul
   workflow_dispatch:
     inputs:
       refresh_since:
