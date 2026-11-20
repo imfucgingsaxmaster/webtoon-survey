@@ -63,6 +63,7 @@ class ProfileCollectionTests(unittest.TestCase):
         series.read.assert_not_called()
         result=profiles.fetch_profile({'series_id':'3','webtoon_id':''},series,webtoon)
         self.assertEqual(result['attempts'][0]['state'],'deferred')
+        self.assertEqual(result['state'],'deferred')
 
     def test_programming_errors_are_not_silenced(self):
         series=self.client();series.read.side_effect=RuntimeError('bug')
@@ -83,6 +84,9 @@ class ProfileCollectionTests(unittest.TestCase):
             self.assertEqual(len(profiles.profile_targets({},cache,True,since)),1)
             cache['profile_checks']={'webtoon:1':{'state':'unavailable','observed_at':now.isoformat()}}
             self.assertEqual(profiles.profile_targets({},cache,True,since),[])
+            cache['profile_checks']['webtoon:1']['state']='deferred'
+            self.assertEqual(len(profiles.profile_targets({},cache,True,since)),1)
+            cache['profile_checks']['webtoon:1']['state']='unavailable'
             # Compare instants, not strings with differing UTC offsets.
             cache['profile_checks']['webtoon:1']['observed_at']=(now-timedelta(days=1)).astimezone(timezone(timedelta(hours=9))).isoformat()
             self.assertEqual(len(profiles.profile_targets({},cache,True,since)),1)
@@ -93,7 +97,7 @@ class ProfileCollectionTests(unittest.TestCase):
         outcomes=[{'state':'unavailable','observed_at':'2026-11-20T00:00:00+00:00',
             'attempts':[{'platform':'webtoon','state':'unavailable','reason':'401'}]},
             {'state':'confirmed','observed_at':'2026-11-20T00:00:01+00:00','description':'new'},
-            {'state':'unavailable','observed_at':'2026-11-20T00:00:02+00:00',
+            {'state':'deferred','observed_at':'2026-11-20T00:00:02+00:00',
              'attempts':[{'platform':'webtoon','state':'deferred','reason':'429'}]}]
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)

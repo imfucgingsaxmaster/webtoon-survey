@@ -20,7 +20,9 @@ def profile_targets(snapshot,metadata,refresh=False,refresh_since=None):
         if w['status']=='완결':continue
         old=metadata.get('profiles',{}).get(w['work_id'],{})
         checked=metadata.get('profile_checks',{}).get(w['work_id'],{})
-        recent=any(r.get('observed_at') and datetime.fromisoformat(r['observed_at'])>=cutoff for r in (old,checked))
+        observed=[old] if old.get('state')=='confirmed' else []
+        if checked.get('state')!='deferred':observed.append(checked)
+        recent=any(r.get('observed_at') and datetime.fromisoformat(r['observed_at'])>=cutoff for r in observed)
         if recent or (old and not refresh and not refresh_since):continue
         serial=next((s for s in w['sources'] if s['platform']=='네이버시리즈'),None)
         targets.append({'work_id':w['work_id'],'title':w['title'],'series_id':serial['title_id'] if serial else '',
@@ -46,7 +48,8 @@ def fetch_profile(target,series,webtoon):
             return dict(result,attempts=attempts+[{'platform':platform,'state':'confirmed'}])
         except (urllib.error.URLError,TimeoutError,PermissionError,ValueError) as exc:
             attempts.append({'platform':platform,'state':'unavailable','reason':type(exc).__name__+': '+str(exc)[:140]})
-    return {'observed_at':utcnow(),'state':'unavailable','attempts':attempts,
+    state='deferred' if attempts and all(a['state']=='deferred' for a in attempts) else 'unavailable'
+    return {'observed_at':utcnow(),'state':state,'attempts':attempts,
             'reason':'; '.join(a['reason'] for a in attempts)}
 
 
@@ -78,7 +81,7 @@ def collect_profiles(root=ROOT,limit=None,refresh=False,publish=False,platform='
                 checks[key]={k:copy.deepcopy(v) for k,v in result.items() if k in ('observed_at','state','reason','attempts')}
                 if result.get('state')=='confirmed' or old.get('state')!='confirmed':profiles[key]=result
                 if result.get('state')=='confirmed':confirmed+=1
-                elif all(a['state']=='deferred' for a in result.get('attempts',[])):deferred+=1
+                elif result.get('state')=='deferred':deferred+=1
                 else:unavailable+=1
                 checked+=1
             checkpoint(('partial' if unavailable or deferred else 'complete') if checked==len(targets) else 'running')
