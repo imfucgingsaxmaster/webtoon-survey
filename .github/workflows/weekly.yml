@@ -79,12 +79,7 @@ jobs:
           for batch in $(seq 1 30); do
             python metadata.py --webtoon-limit 200 --series-limit 0 --refresh-since "$RADAR_REFRESH_SINCE"
             python history_index.py
-            git add catalog_latest.json history/ metadata_latest.json metadata_history/ history_index.json.gz
-            if ! git diff --cached --quiet; then
-              git commit -m "data: publish public detail checkpoint"
-              git pull --rebase origin main
-              git push
-            fi
+            python -c "from data_publish import publish_data; publish_data('.', 'data: publish public detail checkpoint')"
             state=$(python -c "import json; print(json.load(open('metadata_latest.json'))['runs']['webtoon']['state'])")
             if [ "$state" = "complete" ]; then break; fi
           done
@@ -109,15 +104,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add catalog_latest.json history/
-          if [ -f metadata_latest.json ]; then git add metadata_latest.json; fi
-          if [ -d metadata_history ]; then git add metadata_history/; fi
-          if [ -f history_index.json.gz ]; then git add history_index.json.gz; fi
-          if ! git diff --cached --quiet; then
-            git commit -m "data: update catalogue and public title metrics"
-            git pull --rebase origin main
-            git push
-          fi
+          python -c "from data_publish import publish_data; publish_data('.', 'data: update catalogue and public title metrics')"
       - name: Save Excel, summary and SQLite
         if: always()
         uses: actions/upload-artifact@v4
