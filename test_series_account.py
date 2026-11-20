@@ -19,6 +19,12 @@ HTML='''<div id="content"><div class="end_head"><h2>작품</h2>
 
 
 class SeriesAccountTests(unittest.TestCase):
+    def test_login_location_is_only_a_fixed_category(self):
+        self.assertEqual(account.login_page_kind(account.HOME+'?private=secret'),'series_home')
+        self.assertEqual(account.login_page_kind(account.LOGIN+'&id=private'),'login_form')
+        self.assertEqual(account.login_page_kind('https://nid.naver.com/private-account'),'naver_verification')
+        self.assertEqual(account.login_page_kind('https://private.example/secret'),'other')
+
     def test_login_diagnostics_never_return_account_text(self):
         self.assertEqual(account.login_reason('private-account: 자동입력 방지 문자를 입력하세요'),'captcha_required')
         self.assertEqual(account.login_reason('private-account: 2단계 인증'),'additional_verification')

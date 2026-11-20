@@ -25,6 +25,19 @@ LOGIN='https://nid.naver.com/nidlogin.login?url='+quote(HOME,safe='')
 
 class AccountAttention(RuntimeError):
     """A fixed, non-sensitive status code; never include browser exception text."""
+    def __init__(self, code, diagnostics=None):
+        super().__init__(code)
+        self.diagnostics=diagnostics or {}
+
+
+def login_page_kind(url):
+    parts=urlsplit(url)
+    if parts.hostname=='nid.naver.com':
+        return 'login_form' if parts.path=='/nidlogin.login' else 'naver_verification'
+    if parts.hostname=='series.naver.com':
+        return 'series_home' if parts.path=='/comic/home.series' else 'series_other'
+    if parts.hostname=='www.naver.com':return 'naver_home'
+    return 'other'
 
 
 def login_reason(text):
@@ -90,6 +103,7 @@ class AccountBrowser:
             self.page.set_default_timeout(20000)
             self.page.on('response',self.response)
             self.blocked=False
+            self.blocked_navigation=False
             return self
         except Error:
             self.__exit__(None,None,None)
@@ -99,6 +113,7 @@ class AccountBrowser:
         host=urlsplit(route.request.url).hostname or ''
         allowed=host in ('nid.naver.com','series.naver.com') or host.endswith('.pstatic.net')
         if not allowed or route.request.resource_type in ('image','media','font'):
+            if route.request.is_navigation_request():self.blocked_navigation=True
             route.abort()
         else:route.continue_()
 
@@ -109,20 +124,26 @@ class AccountBrowser:
             self.blocked=True
 
     def login(self,username,password):
+        phase='open_form'
         try:
             self.page.goto(LOGIN,wait_until='domcontentloaded')
             if self.blocked or urlsplit(self.page.url).hostname!='nid.naver.com':
                 raise AccountAttention('login_requires_attention')
+            phase='enter_credentials'
             self.page.get_by_role('textbox',name='아이디 또는 전화번호',exact=True).fill(username)
             self.page.get_by_role('textbox',name='비밀번호',exact=True).fill(password)
+            phase='submit_form'
             self.page.get_by_role('button',name='로그인',exact=True).click()
             # CAPTCHA, OTP, device and age verification are never handled here.
+            phase='await_redirect'
             self.page.wait_for_url(HOME,timeout=30000,wait_until='domcontentloaded')
             if self.blocked:raise AccountAttention('access_stopped')
         except self.error:
             try:reason=login_reason(self.page.locator('body').inner_text(timeout=2000))
             except self.error:reason='login_requires_attention'
-            raise AccountAttention(reason) from None
+            diagnostics={'phase':phase,'page_kind':login_page_kind(self.page.url),
+                         'blocked_navigation':self.blocked_navigation,'access_stopped':self.blocked}
+            raise AccountAttention(reason,diagnostics) from None
 
     def read(self,ident):
         if self.blocked:raise AccountAttention('access_stopped')
@@ -150,7 +171,9 @@ def check_login(browser_factory=AccountBrowser):
         with browser_factory() as browser:browser.login(username,password)
         return {'state':'ready'}
     except AccountAttention as exc:
-        return {'state':'needs_attention','reason_code':str(exc)}
+        result={'state':'needs_attention','reason_code':str(exc)}
+        if exc.diagnostics:result['diagnostics']=exc.diagnostics
+        return result
     finally:username=password=None
 
 
