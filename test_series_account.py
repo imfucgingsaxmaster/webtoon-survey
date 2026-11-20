@@ -29,6 +29,8 @@ class SeriesAccountTests(unittest.TestCase):
         self.assertEqual(account.login_reason('private-account: 자동입력 방지 문자를 입력하세요'),'captcha_required')
         self.assertEqual(account.login_reason('private-account: 2단계 인증'),'additional_verification')
         self.assertEqual(account.login_reason('private-account: 새로운 기기 확인'),'device_verification')
+        self.assertEqual(account.login_reason('아이디 또는 비밀번호가\n잘못 되었습니다'),'credentials_rejected')
+        self.assertEqual(account.login_reason('잠시 후 다시 시도해주세요'),'temporarily_unavailable')
         self.assertEqual(account.login_reason('private-account / private-password'),'login_requires_attention')
 
     def fixture(self):

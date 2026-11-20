@@ -42,11 +42,13 @@ def login_page_kind(url):
 
 def login_reason(text):
     # Keep only a fixed reason code, never the page's account-specific text.
+    text=' '.join(text.split())
     for words,code in [
-        (('자동입력 방지','자동 입력 방지','보안 문자','보안문자'),'captcha_required'),
+        (('자동입력 방지','자동 입력 방지','보안 문자','보안문자','로봇이 아닙니다','로봇이 아님','영수증 문제','CAPTCHA'),'captcha_required'),
         (('2단계 인증','2단계인증','인증번호','인증 번호'),'additional_verification'),
         (('해외 로그인','해외 IP','새로운 기기','새 기기'),'device_verification'),
-        (('비밀번호를 잘못','비밀번호가 일치','등록되지 않은 아이디'),'credentials_rejected')]:
+        (('비밀번호를 잘못','비밀번호가 일치','등록되지 않은 아이디','비밀번호가 잘못','비밀번호를 확인','비밀번호를 다시 확인','아이디를 확인','로그인 전용 아이디'),'credentials_rejected'),
+        (('잠시 후 다시','일시적인 오류','일시적으로','temporarily unavailable'),'temporarily_unavailable')]:
         if any(word in text for word in words):return code
     return 'login_requires_attention'
 
@@ -139,8 +141,13 @@ class AccountBrowser:
             self.page.wait_for_url(HOME,timeout=30000,wait_until='domcontentloaded')
             if self.blocked:raise AccountAttention('access_stopped')
         except self.error:
-            try:reason=login_reason(self.page.locator('body').inner_text(timeout=2000))
-            except self.error:reason='login_requires_attention'
+            reason='login_requires_attention'
+            for frame in self.page.frames:
+                try:
+                    if frame!=self.page.main_frame and not frame.frame_element().is_visible():continue
+                    candidate=login_reason(frame.locator('body').inner_text(timeout=1000))
+                    if candidate!='login_requires_attention':reason=candidate;break
+                except self.error:pass
             diagnostics={'phase':phase,'page_kind':login_page_kind(self.page.url),
                          'blocked_navigation':self.blocked_navigation,'access_stopped':self.blocked}
             raise AccountAttention(reason,diagnostics) from None
