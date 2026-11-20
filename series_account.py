@@ -130,6 +130,17 @@ class AccountBrowser:
         if self.engine:self.engine.stop()
 
 
+def check_login(browser_factory=AccountBrowser):
+    username=os.environ.get('NAVER_ID','');password=os.environ.get('NAVER_PASSWORD','')
+    if not username or not password:return {'state':'not_configured'}
+    try:
+        with browser_factory() as browser:browser.login(username,password)
+        return {'state':'ready'}
+    except AccountAttention as exc:
+        return {'state':'needs_attention','reason_code':str(exc)}
+    finally:username=password=None
+
+
 def collect(root=ROOT,refresh_since=None,publish=False,browser_factory=AccountBrowser):
     root=Path(root);path=root/'metadata_latest.json'
     cache=json.loads(path.read_bytes());snapshot=json.loads((root/'catalog_latest.json').read_bytes())
@@ -197,6 +208,8 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',default=str(ROOT));parser.add_argument('--refresh-since')
     parser.add_argument('--publish',action='store_true')
+    parser.add_argument('--check-login',action='store_true',help='Check sign-in once without reading or modifying catalogue data')
     args=parser.parse_args()
-    result=collect(args.root,args.refresh_since,args.publish)
-    if result['state'] in ('needs_attention','partial'):raise SystemExit(2)
+    result=check_login() if args.check_login else collect(args.root,args.refresh_since,args.publish)
+    if args.check_login:print(json.dumps(result))
+    if result['state'] in ('needs_attention','partial','not_configured'):raise SystemExit(2)

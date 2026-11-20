@@ -71,6 +71,12 @@ class SeriesAccountTests(unittest.TestCase):
         result,_,_,_=self.run_collect({},factory)
         self.assertEqual(result['state'],'not_configured');factory.assert_not_called()
 
+    def test_login_probe_does_not_read_products(self):
+        factory=MagicMock();browser=factory.return_value.__enter__.return_value
+        with patch.dict(os.environ,{'NAVER_ID':'test','NAVER_PASSWORD':'test'},clear=True):
+            self.assertEqual(account.check_login(factory),{'state':'ready'})
+        browser.login.assert_called_once_with('test','test');browser.read.assert_not_called()
+
     def test_extra_verification_stops_without_retry_or_credential_leak(self):
         factory=MagicMock();browser=factory.return_value.__enter__.return_value
         browser.login.side_effect=account.AccountAttention('login_requires_attention')
