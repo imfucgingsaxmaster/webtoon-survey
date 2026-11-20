@@ -27,6 +27,17 @@ class AccountAttention(RuntimeError):
     """A fixed, non-sensitive status code; never include browser exception text."""
 
 
+def login_reason(text):
+    # Keep only a fixed reason code, never the page's account-specific text.
+    for words,code in [
+        (('자동입력 방지','자동 입력 방지','보안 문자','보안문자'),'captcha_required'),
+        (('2단계 인증','2단계인증','인증번호','인증 번호'),'additional_verification'),
+        (('해외 로그인','해외 IP','새로운 기기','새 기기'),'device_verification'),
+        (('비밀번호를 잘못','비밀번호가 일치','등록되지 않은 아이디'),'credentials_rejected')]:
+        if any(word in text for word in words):return code
+    return 'login_requires_attention'
+
+
 def pending_series(snapshot, metadata, since):
     frozen=frozen_ids(snapshot,metadata)['series']
     blocked=set(metadata.get('unavailable',{}).get('series',{}))
@@ -109,7 +120,9 @@ class AccountBrowser:
             self.page.wait_for_url(HOME,timeout=30000,wait_until='domcontentloaded')
             if self.blocked:raise AccountAttention('access_stopped')
         except self.error:
-            raise AccountAttention('login_requires_attention') from None
+            try:reason=login_reason(self.page.locator('body').inner_text(timeout=2000))
+            except self.error:reason='login_requires_attention'
+            raise AccountAttention(reason) from None
 
     def read(self,ident):
         if self.blocked:raise AccountAttention('access_stopped')

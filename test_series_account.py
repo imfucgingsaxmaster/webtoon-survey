@@ -19,6 +19,12 @@ HTML='''<div id="content"><div class="end_head"><h2>작품</h2>
 
 
 class SeriesAccountTests(unittest.TestCase):
+    def test_login_diagnostics_never_return_account_text(self):
+        self.assertEqual(account.login_reason('private-account: 자동입력 방지 문자를 입력하세요'),'captcha_required')
+        self.assertEqual(account.login_reason('private-account: 2단계 인증'),'additional_verification')
+        self.assertEqual(account.login_reason('private-account: 새로운 기기 확인'),'device_verification')
+        self.assertEqual(account.login_reason('private-account / private-password'),'login_requires_attention')
+
     def fixture(self):
         snapshot={'titles':[{'title_id':'1','title':'작품','author':'작가','status':'연재'}]}
         cache={'schema_version':1,'webtoon':{'1':{'contents_no':'10'}},'series':{},
