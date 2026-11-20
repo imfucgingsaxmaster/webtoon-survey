@@ -7,3 +7,7 @@ outputs/
 .pytest_cache/
 .radar_cache/
 detail_overrides.json
+playwright/.auth/
+storage_state*.json
+test-results/
+playwright-report/
