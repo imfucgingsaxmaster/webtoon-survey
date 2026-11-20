@@ -113,8 +113,12 @@ class AccountBrowser:
 
     def route(self,route):
         host=urlsplit(route.request.url).hostname or ''
-        allowed=host in ('nid.naver.com','series.naver.com') or host.endswith('.pstatic.net')
-        if not allowed or route.request.resource_type in ('image','media','font'):
+        # Let the ordinary Naver sign-in page load its first-party verification
+        # resources. Blocking its images/scripts can prevent form submission.
+        # A visible CAPTCHA or other owner verification still stops collection.
+        allowed=(host=='naver.com' or host.endswith('.naver.com') or
+                 host=='pstatic.net' or host.endswith('.pstatic.net'))
+        if not allowed:
             if route.request.is_navigation_request():self.blocked_navigation=True
             route.abort()
         else:route.continue_()

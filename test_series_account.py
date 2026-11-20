@@ -19,6 +19,16 @@ HTML='''<div id="content"><div class="end_head"><h2>작품</h2>
 
 
 class SeriesAccountTests(unittest.TestCase):
+    def test_normal_sign_in_resources_load_without_allowing_external_hosts(self):
+        browser=account.AccountBrowser()
+        for url in ('https://nid.naver.com/image.png','https://wtm.pstatic.net/image.png','https://www.naver.com/'):
+            route=Mock();route.request.url=url;route.request.resource_type='image'
+            browser.route(route)
+            route.continue_.assert_called_once();route.abort.assert_not_called()
+        route=Mock();route.request.url='https://naver.com.example/track'
+        browser.route(route)
+        route.abort.assert_called_once();route.continue_.assert_not_called()
+
     def test_login_location_is_only_a_fixed_category(self):
         self.assertEqual(account.login_page_kind(account.HOME+'?private=secret'),'series_home')
         self.assertEqual(account.login_page_kind(account.LOGIN+'&id=private'),'login_form')
