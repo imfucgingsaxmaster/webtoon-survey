@@ -44,6 +44,7 @@ def login_reason(text):
     # Keep only a fixed reason code, never the page's account-specific text.
     text=' '.join(text.split())
     for words,code in [
+        (('아이디를 입력','비밀번호를 입력','필수 정보입니다'),'input_required'),
         (('자동입력 방지','자동 입력 방지','보안 문자','보안문자','로봇이 아닙니다','로봇이 아님','영수증 문제','CAPTCHA'),'captcha_required'),
         (('2단계 인증','2단계인증','인증번호','인증 번호'),'additional_verification'),
         (('해외 로그인','해외 IP','새로운 기기','새 기기'),'device_verification'),
@@ -51,6 +52,20 @@ def login_reason(text):
         (('잠시 후 다시','일시적인 오류','일시적으로','temporarily unavailable'),'temporarily_unavailable')]:
         if any(word in text for word in words):return code
     return 'login_requires_attention'
+
+
+def safe_diagnostics(value):
+    """Only enumerated stages, flags and HTTP statuses may reach public logs."""
+    result={}
+    enums={'phase':{'open_form','enter_credentials','submit_form','await_redirect'},
+           'page_kind':{'login_form','naver_verification','series_home','series_other','naver_home','other'}}
+    for key,allowed in enums.items():
+        if value.get(key) in allowed:result[key]=value[key]
+    for key in ('blocked_navigation','access_stopped','login_post_sent','id_present','password_present'):
+        if type(value.get(key)) is bool:result[key]=value[key]
+    status=value.get('login_http_status')
+    if type(status) is int and 100<=status<=599:result['login_http_status']=status
+    return result
 
 
 def pending_series(snapshot, metadata, since):
@@ -103,6 +118,9 @@ class AccountBrowser:
             self.context.route('**/*',self.route)
             self.page=self.context.new_page()
             self.page.set_default_timeout(20000)
+            self.login_post_sent=False
+            self.login_http_status=None
+            self.page.on('request',self.request)
             self.page.on('response',self.response)
             self.blocked=False
             self.blocked_navigation=False
@@ -123,7 +141,15 @@ class AccountBrowser:
             route.abort()
         else:route.continue_()
 
+    def request(self,request):
+        parts=urlsplit(request.url)
+        if request.method=='POST' and parts.hostname=='nid.naver.com' and parts.path=='/nidlogin.login':
+            self.login_post_sent=True
+
     def response(self,response):
+        parts=urlsplit(response.url)
+        if response.request.method=='POST' and parts.hostname=='nid.naver.com' and parts.path=='/nidlogin.login':
+            self.login_http_status=response.status
         if (response.request.is_navigation_request() and
             urlsplit(response.url).hostname in ('series.naver.com','nid.naver.com') and
             response.status in (403,429)):
@@ -153,8 +179,14 @@ class AccountBrowser:
                     if candidate!='login_requires_attention':reason=candidate;break
                 except self.error:pass
             diagnostics={'phase':phase,'page_kind':login_page_kind(self.page.url),
-                         'blocked_navigation':self.blocked_navigation,'access_stopped':self.blocked}
-            raise AccountAttention(reason,diagnostics) from None
+                         'blocked_navigation':self.blocked_navigation,'access_stopped':self.blocked,
+                         'login_post_sent':self.login_post_sent,'login_http_status':self.login_http_status}
+            if diagnostics['page_kind']=='login_form':
+                for key,label in [('id_present','아이디 또는 전화번호'),('password_present','비밀번호')]:
+                    try:
+                        diagnostics[key]=self.page.get_by_role('textbox',name=label,exact=True).evaluate('(el) => Boolean(el.value)')
+                    except self.error:pass
+            raise AccountAttention(reason,safe_diagnostics(diagnostics)) from None
 
     def read(self,ident):
         if self.blocked:raise AccountAttention('access_stopped')
@@ -183,7 +215,7 @@ def check_login(browser_factory=AccountBrowser):
         return {'state':'ready'}
     except AccountAttention as exc:
         result={'state':'needs_attention','reason_code':str(exc)}
-        if exc.diagnostics:result['diagnostics']=exc.diagnostics
+        if exc.diagnostics:result['diagnostics']=safe_diagnostics(exc.diagnostics)
         return result
     finally:username=password=None
 
@@ -234,6 +266,7 @@ def collect(root=ROOT,refresh_since=None,publish=False,browser_factory=AccountBr
         save('partial' if run['unavailable'] else 'complete')
     except AccountAttention as exc:
         run['reason_code']=str(exc)
+        if exc.diagnostics:run['diagnostics']=safe_diagnostics(exc.diagnostics)
         save('needs_attention')
         print('::warning::Series account supplement stopped. Sign-in or additional verification needs owner attention; existing observations are preserved.')
     finally:

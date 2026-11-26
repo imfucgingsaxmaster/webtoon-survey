@@ -36,12 +36,32 @@ class SeriesAccountTests(unittest.TestCase):
         self.assertEqual(account.login_page_kind('https://private.example/secret'),'other')
 
     def test_login_diagnostics_never_return_account_text(self):
+        self.assertEqual(account.login_reason('비밀번호를 입력해 주세요'),'input_required')
         self.assertEqual(account.login_reason('private-account: 자동입력 방지 문자를 입력하세요'),'captcha_required')
         self.assertEqual(account.login_reason('private-account: 2단계 인증'),'additional_verification')
         self.assertEqual(account.login_reason('private-account: 새로운 기기 확인'),'device_verification')
         self.assertEqual(account.login_reason('아이디 또는 비밀번호가\n잘못 되었습니다'),'credentials_rejected')
         self.assertEqual(account.login_reason('잠시 후 다시 시도해주세요'),'temporarily_unavailable')
         self.assertEqual(account.login_reason('private-account / private-password'),'login_requires_attention')
+
+    def test_login_diagnostics_only_keep_allowlisted_types_and_values(self):
+        safe=account.safe_diagnostics({'phase':'await_redirect','page_kind':'login_form',
+             'login_post_sent':True,'login_http_status':200,'id_present':True,'password_present':True,
+             'account':'private-account','password':'private-password','url':'private-url',
+             'access_stopped':'private-text','blocked_navigation':False})
+        self.assertEqual(safe,{'phase':'await_redirect','page_kind':'login_form',
+             'login_post_sent':True,'login_http_status':200,'id_present':True,'password_present':True,
+             'blocked_navigation':False})
+        self.assertEqual(account.safe_diagnostics({'phase':'private','page_kind':'private','login_http_status':True}),{})
+
+    def test_submit_diagnostics_do_not_read_request_body(self):
+        browser=account.AccountBrowser();browser.login_post_sent=False;browser.login_http_status=None
+        request=Mock();request.url='https://nid.naver.com/nidlogin.login?private=hidden';request.method='POST'
+        browser.request(request)
+        response=Mock();response.url=request.url;response.request=request;response.status=200
+        browser.response(response)
+        self.assertTrue(browser.login_post_sent);self.assertEqual(browser.login_http_status,200)
+        request.post_data.assert_not_called()
 
     def fixture(self):
         snapshot={'titles':[{'title_id':'1','title':'작품','author':'작가','status':'연재'}]}
@@ -103,11 +123,15 @@ class SeriesAccountTests(unittest.TestCase):
 
     def test_extra_verification_stops_without_retry_or_credential_leak(self):
         factory=MagicMock();browser=factory.return_value.__enter__.return_value
-        browser.login.side_effect=account.AccountAttention('login_requires_attention')
+        browser.login.side_effect=account.AccountAttention('login_requires_attention',
+            {'phase':'await_redirect','page_kind':'login_form','login_post_sent':True,'login_http_status':200,
+             'account':'private-test-account'})
         env={'NAVER_ID':'private-test-account','NAVER_PASSWORD':'private-test-password'}
         result,saved,output,files=self.run_collect(env,factory)
         self.assertEqual(result['state'],'needs_attention')
         self.assertEqual(result['checked'],0);browser.login.assert_called_once();browser.read.assert_not_called()
+        self.assertEqual(saved['runs']['series_account']['diagnostics'],
+            {'phase':'await_redirect','page_kind':'login_form','login_post_sent':True,'login_http_status':200})
         self.assertEqual(saved['series'],{})
         self.assertEqual(files,{'metadata_latest.json','catalog_latest.json'})
         for secret in env.values():self.assertNotIn(secret,output+json.dumps(saved))
