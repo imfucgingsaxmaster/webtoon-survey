@@ -289,6 +289,28 @@ class AccountBrowser:
             self.page.wait_for_timeout(200)
         raise AccountAttention('page_load_timeout')
 
+    def wait_for_series_redirect(self,timeout=30):
+        """Allow Naver to finish authentication and redirect itself to Series.
+
+        Navigating manually from a post-login interstitial can interrupt the
+        normal sign-in sequence or conceal an owner verification requirement.
+        """
+        deadline=time.monotonic()+timeout
+        while time.monotonic()<deadline:
+            if self.blocked:raise AccountAttention('access_stopped')
+            if self.dialog_seen:raise AccountAttention(self.dialog_reason)
+            try:
+                state=self.inspect_page()
+                if state['known_reason']!='login_requires_attention':
+                    raise AccountAttention(state['known_reason'])
+                if state['document_ready_state']!='loading':
+                    if state['password_field_visible']:raise AccountAttention('auth_unconfirmed')
+                    if urlsplit(self.page.url).hostname=='series.naver.com':return state
+            except self.error as exc:
+                if not navigation_in_progress(exc):raise
+            self.page.wait_for_timeout(200)
+        raise AccountAttention('login_redirect_incomplete')
+
     def login(self,username,password):
         phase='open_form'
         post_submit_dom=None
@@ -306,7 +328,7 @@ class AccountBrowser:
             # DOM, then verify an actual authenticated Series menu, not a URL.
             phase='await_redirect'
             self.wait_for_login_response()
-            state=self.settled_page()
+            state=self.wait_for_series_redirect()
             post_submit_dom=state['dom_kind']
             if self.dialog_seen:raise AccountAttention(self.dialog_reason)
             if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])

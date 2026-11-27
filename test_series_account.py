@@ -243,6 +243,118 @@ class SeriesAccountTests(unittest.TestCase):
         self.assertFalse(account.navigation_in_progress(RuntimeError('Access denied')))
         self.assertFalse(account.navigation_in_progress(RuntimeError('Timeout 20000ms exceeded')))
 
+    def redirect_browser(self):
+        browser,clock,advance=self.waiting_browser()
+        browser.inspect_page.return_value={
+            'document_ready_state':'complete','known_reason':'login_requires_attention',
+            'password_field_visible':False,'id_field_visible':False,
+            'body_text_present':True,'dom_kind':'content'}
+        return browser,clock,advance
+
+    def test_delayed_series_redirect_is_allowed_to_finish_without_forced_navigation(self):
+        browser,clock,advance=self.redirect_browser()
+        expected=browser.inspect_page.return_value
+        def events(milliseconds):
+            advance(milliseconds)
+            if clock['pumps']==3:browser.page.url=account.HOME
+        browser.page.wait_for_timeout.side_effect=events
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']):
+            state=browser.wait_for_series_redirect(timeout=2)
+        self.assertEqual(state,expected);self.assertEqual(clock['pumps'],3)
+        browser.page.goto.assert_not_called();browser.page.get_by_role.assert_not_called()
+        browser.page.locator.assert_not_called()
+
+    def test_unfinished_naver_interstitial_times_out_without_forcing_home(self):
+        browser,clock,_=self.redirect_browser()
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']),\
+             self.assertRaises(account.AccountAttention) as caught:
+            browser.wait_for_series_redirect(timeout=1)
+        self.assertEqual(str(caught.exception),'login_redirect_incomplete')
+        self.assertGreaterEqual(clock['now'],1);self.assertLessEqual(clock['now'],1.2)
+        self.assertEqual(browser.page.url,account.LOGIN)
+        browser.page.goto.assert_not_called();browser.page.get_by_role.assert_not_called()
+        browser.page.locator.assert_not_called()
+
+    def test_redirect_wait_stops_for_verification_block_or_dialog(self):
+        for reason in ('captcha_required','additional_verification','device_verification',
+                       'credentials_rejected','access_stopped','dialog'):
+            with self.subTest(reason=reason):
+                browser,clock,_=self.redirect_browser()
+                expected=reason
+                if reason=='access_stopped':browser.blocked=True
+                elif reason=='dialog':
+                    browser.dialog_seen=True;browser.dialog_reason='additional_verification'
+                    expected='additional_verification'
+                else:browser.inspect_page.return_value['known_reason']=reason
+                with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']),\
+                     self.assertRaises(account.AccountAttention) as caught:
+                    browser.wait_for_series_redirect(timeout=1)
+                self.assertEqual(str(caught.exception),expected)
+                browser.page.wait_for_timeout.assert_not_called()
+                browser.page.goto.assert_not_called();browser.page.get_by_role.assert_not_called()
+                browser.page.locator.assert_not_called()
+
+    def test_redirect_wait_rejects_returned_password_form(self):
+        browser,clock,_=self.redirect_browser()
+        browser.inspect_page.return_value.update(password_field_visible=True,dom_kind='password_form')
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']),\
+             self.assertRaises(account.AccountAttention) as caught:
+            browser.wait_for_series_redirect(timeout=1)
+        self.assertEqual(str(caught.exception),'auth_unconfirmed')
+        browser.page.wait_for_timeout.assert_not_called()
+        browser.page.goto.assert_not_called();browser.page.get_by_role.assert_not_called()
+
+    def test_redirect_wait_survives_loading_and_context_replacement(self):
+        browser,clock,advance=self.redirect_browser()
+        complete=browser.inspect_page.return_value
+        browser.inspect_page.side_effect=[{**complete,'document_ready_state':'loading'},
+            RuntimeError('Execution context was destroyed'),complete]
+        def events(milliseconds):
+            advance(milliseconds)
+            if clock['pumps']==2:browser.page.url=account.HOME
+        browser.page.wait_for_timeout.side_effect=events
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']):
+            state=browser.wait_for_series_redirect(timeout=1)
+        self.assertEqual(state,complete);self.assertEqual(clock['pumps'],2)
+        browser.page.goto.assert_not_called();browser.page.get_by_role.assert_not_called()
+
+    def test_redirect_wait_has_one_deadline_even_while_document_keeps_changing(self):
+        for transient in (False,True):
+            with self.subTest(transient=transient):
+                browser,clock,_=self.redirect_browser()
+                if transient:
+                    browser.inspect_page.side_effect=RuntimeError('Cannot find context with specified id')
+                else:browser.inspect_page.return_value.update(document_ready_state='loading')
+                with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']),\
+                     self.assertRaises(account.AccountAttention) as caught:
+                    browser.wait_for_series_redirect(timeout=1)
+                self.assertEqual(str(caught.exception),'login_redirect_incomplete')
+                self.assertGreaterEqual(clock['now'],1);self.assertLessEqual(clock['now'],1.2)
+                browser.page.goto.assert_not_called();browser.page.get_by_role.assert_not_called()
+
+    def test_redirect_wait_does_not_silence_unrelated_browser_errors(self):
+        browser,clock,_=self.redirect_browser()
+        failure=RuntimeError('Unexpected browser evaluation failure')
+        browser.inspect_page.side_effect=failure
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']),\
+             self.assertRaises(RuntimeError) as caught:
+            browser.wait_for_series_redirect(timeout=1)
+        self.assertIs(caught.exception,failure)
+        browser.page.wait_for_timeout.assert_not_called();browser.page.goto.assert_not_called()
+
+    def test_login_never_forces_home_when_ordinary_redirect_does_not_complete(self):
+        browser,_,_=self.redirect_browser()
+        browser.wait_for_login_response=Mock()
+        browser.wait_for_series_redirect=Mock(side_effect=account.AccountAttention('login_redirect_incomplete'))
+        browser.verify_series_session=Mock()
+        with self.assertRaises(account.AccountAttention) as caught:
+            browser.login('synthetic-user','synthetic-password')
+        self.assertEqual(str(caught.exception),'login_redirect_incomplete')
+        browser.wait_for_series_redirect.assert_called_once()
+        browser.verify_series_session.assert_not_called()
+        browser.page.goto.assert_called_once_with(account.LOGIN,wait_until='domcontentloaded')
+        browser.page.get_by_role.return_value.click.assert_called_once()
+
     def session_browser(self,authenticated=False,reason='login_requires_attention'):
         browser=account.AccountBrowser()
         browser.error=RuntimeError
