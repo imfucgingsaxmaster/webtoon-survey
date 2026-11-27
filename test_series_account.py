@@ -63,6 +63,58 @@ class SeriesAccountTests(unittest.TestCase):
         self.assertTrue(browser.login_post_sent);self.assertEqual(browser.login_http_status,200)
         request.post_data.assert_not_called()
 
+    def test_ui_diagnostics_keep_only_exact_allowlisted_strings(self):
+        safe=account.safe_diagnostics({
+            'ui_actions':['확인','등록 안 함','private-account 확인','확인 private-password',
+                          ' 확인','확인 ',None,3,True,{'name':'확인'},['확인']],
+            'ui_topics':['security','account','private-account','security private-password',
+                         'Security',' security',None,3,True,{'name':'security'},['security']],
+            'button_labels':['private-account'],'body_text':'private-password'})
+        self.assertEqual(safe,{'ui_actions':['확인','등록 안 함'],'ui_topics':['security','account']})
+        encoded=json.dumps(safe,ensure_ascii=False)
+        self.assertNotIn('private-account',encoded);self.assertNotIn('private-password',encoded)
+        self.assertNotIn('button_labels',safe);self.assertNotIn('body_text',safe)
+
+    def test_ui_diagnostics_reject_non_list_containers(self):
+        for invalid in ('확인','security',('확인',),{'확인'},{'name':'확인'},True,1,None):
+            with self.subTest(type=type(invalid).__name__):
+                self.assertEqual(account.safe_diagnostics({'ui_actions':invalid,'ui_topics':invalid}),{})
+
+    def test_ui_diagnostics_accept_every_documented_action_and_topic(self):
+        actions=['확인','취소','다음','완료','나중에','나중에 하기','저장','저장 안 함',
+                 '등록','등록하기','등록 안 함','예','아니오','아니요','로그인','다시 로그인',
+                 '다른 계정으로 로그인','동의','인증','계속','닫기','도움말']
+        topics=['security','device','browser','register','save','account','password','verify',
+                'approve','consent','access','blocked','protect','age','phone','email','captcha',
+                'retry','error','passkey','otp','ip','login','connection']
+        for key,values in (('ui_actions',actions),('ui_topics',topics)):
+            for value in values:
+                with self.subTest(key=key,value=value):
+                    self.assertEqual(account.safe_diagnostics({key:[value]}),{key:[value]})
+
+    def test_ui_diagnostics_limit_each_list_to_twenty_safe_items(self):
+        safe=account.safe_diagnostics({'ui_actions':['확인']*30,'ui_topics':['security']*30})
+        self.assertGreater(len(safe['ui_actions']),0);self.assertLessEqual(len(safe['ui_actions']),20)
+        self.assertGreater(len(safe['ui_topics']),0);self.assertLessEqual(len(safe['ui_topics']),20)
+        self.assertTrue(all(value=='확인' for value in safe['ui_actions']))
+        self.assertTrue(all(value=='security' for value in safe['ui_topics']))
+
+    def test_public_diagnostics_drop_private_labels_even_if_page_fixture_contains_them(self):
+        browser=account.AccountBrowser();browser.error=RuntimeError;browser.page=MagicMock()
+        browser.page.evaluate.return_value={
+            'body_text':'계정 private-account private-password','notice_text':'',
+            'id_field_visible':False,'password_field_visible':False,
+            'document_ready_state':'complete','visible_input_count':1,'visible_button_count':3,
+            'control_texts':['확인','private-account','private-password 확인']}
+        state=browser.inspect_page()
+        safe=account.safe_diagnostics(state)
+        self.assertEqual(safe['ui_actions'],['확인']);self.assertEqual(safe['ui_topics'],['account'])
+        encoded=json.dumps(safe,ensure_ascii=False)
+        self.assertNotIn('private-account',encoded);self.assertNotIn('private-password',encoded)
+        self.assertNotIn('body_text',safe);self.assertNotIn('notice_text',safe)
+        self.assertNotIn('control_texts',state)
+        browser.page.get_by_role.assert_not_called();browser.page.locator.assert_not_called()
+
     def waiting_browser(self):
         browser=account.AccountBrowser();browser.error=RuntimeError;browser.page=MagicMock()
         browser.page.url=account.LOGIN

@@ -21,6 +21,17 @@ from work_profiles import series_profile
 
 HOME='https://series.naver.com/comic/home.series'
 LOGIN='https://nid.naver.com/nidlogin.login?url='+quote(HOME,safe='')
+UI_ACTIONS={'확인','취소','다음','완료','나중에','나중에 하기','저장','저장 안 함','등록','등록하기',
+            '등록 안 함','예','아니오','아니요','로그인','다시 로그인','다른 계정으로 로그인','동의',
+            '인증','계속','닫기','도움말'}
+UI_TOPICS={'security':('보안',),'device':('기기','기계'),'browser':('브라우저',),
+           'register':('등록',),'save':('저장',),'account':('계정','아이디'),
+           'password':('비밀번호',),'verify':('인증',),'approve':('승인',),
+           'consent':('동의','약관'),'access':('접근','접속'),'blocked':('차단','제한'),
+           'protect':('보호',),'age':('연령','나이','성인'),'phone':('전화','휴대폰'),
+           'email':('이메일','메일'),'captcha':('자동입력','보안문자','로봇'),
+           'retry':('다시',),'error':('오류','실패'),'passkey':('패스키',),
+           'otp':('OTP','일회용'),'ip':('IP',),'login':('로그인',),'connection':('연결',)}
 
 
 class AccountAttention(RuntimeError):
@@ -76,6 +87,9 @@ def safe_diagnostics(value):
         if type(value.get(key)) is int and 0<=value[key]<=10000:result[key]=value[key]
     status=value.get('login_http_status')
     if type(status) is int and 100<=status<=599:result['login_http_status']=status
+    for key,allowed in (('ui_actions',UI_ACTIONS),('ui_topics',UI_TOPICS)):
+        if isinstance(value.get(key),list):
+            result[key]=[item for item in value[key] if isinstance(item,str) and item in allowed][:20]
     return result
 
 
@@ -195,12 +209,17 @@ class AccountBrowser:
             logout_button_visible:visible(document.querySelector('#gnb_logout_button')),
             body_text:document.body?.innerText || '',
             notice_text:notices.map(e=>e.innerText || '').join(' '),
+            control_texts:Array.from(document.querySelectorAll('button,[role="button"],a')).filter(visible).map(e=>e.innerText || ''),
             id_field_visible:inputs.some(e=>e.id==='id'||e.autocomplete==='username'),
             password_field_visible:inputs.some(e=>e.type==='password'),
             visible_input_count:inputs.length,
             visible_button_count:Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible).length};
         }''')
         body=state.pop('body_text','');notice=state.pop('notice_text','')
+        controls=state.pop('control_texts',[])
+        state['ui_actions']=sorted({label for text in controls
+            if (label:=' '.join(text.split())) in UI_ACTIONS})
+        state['ui_topics']=[key for key,words in UI_TOPICS.items() if any(word in body for word in words)]
         state['body_text_present']=bool(body.strip())
         reason=login_reason(notice)
         if reason=='login_requires_attention' and not state.get('password_field_visible'):
