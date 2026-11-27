@@ -69,7 +69,7 @@ def safe_diagnostics(value):
     for key,allowed in enums.items():
         if isinstance(value.get(key),str) and value[key] in allowed:result[key]=value[key]
     for key in ('blocked_navigation','access_stopped','login_post_sent','id_present','password_present',
-                'id_field_visible','password_field_visible','body_text_present','dialog_seen'):
+                'id_field_visible','password_field_visible','body_text_present','dialog_seen','login_response_navigation'):
         if type(value.get(key)) is bool:result[key]=value[key]
     for key in ('visible_input_count','visible_button_count','frame_count','blocked_resource_count','page_error_count'):
         if type(value.get(key)) is int and 0<=value[key]<=10000:result[key]=value[key]
@@ -130,6 +130,8 @@ class AccountBrowser:
             self.page.set_default_timeout(20000)
             self.login_post_sent=False
             self.login_http_status=None
+            self.login_response_navigation=False
+            self.document_version=0
             self.blocked_resource_count=0
             self.page_error_count=0
             self.dialog_seen=False
@@ -137,6 +139,7 @@ class AccountBrowser:
             self.dialog_reason='login_requires_attention'
             self.page.on('request',self.request)
             self.page.on('response',self.response)
+            self.page.on('framenavigated',self.navigated)
             self.page.on('dialog',self.dialog)
             self.page.on('pageerror',self.page_error)
             self.blocked=False
@@ -161,6 +164,9 @@ class AccountBrowser:
 
     def page_error(self,_error):
         self.page_error_count+=1
+
+    def navigated(self,frame):
+        if frame==self.page.main_frame:self.document_version+=1
 
     def dialog(self,dialog):
         self.dialog_seen=True
@@ -226,10 +232,31 @@ class AccountBrowser:
         parts=urlsplit(response.url)
         if response.request.method=='POST' and parts.hostname=='nid.naver.com' and parts.path=='/nidlogin.login':
             self.login_http_status=response.status
+            self.login_response_navigation=response.request.is_navigation_request()
         if (response.request.is_navigation_request() and
             urlsplit(response.url).hostname in ('series.naver.com','nid.naver.com') and
             response.status in (403,429)):
             self.blocked=True
+
+    def wait_for_login_response(self,timeout=30):
+        """Wait for Naver's asynchronous form submission without clicking twice."""
+        deadline=time.monotonic()+timeout
+        while time.monotonic()<deadline:
+            if self.blocked:raise AccountAttention('access_stopped')
+            if self.dialog_seen:raise AccountAttention(self.dialog_reason)
+            if self.login_http_status is not None:
+                if self.login_response_navigation and self.document_version>self.submitted_document_version:
+                    self.page.wait_for_load_state('domcontentloaded',timeout=10000)
+                    return
+                if not self.login_response_navigation:
+                    state=self.inspect_page()
+                    if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])
+                    if not state['password_field_visible']:return
+            else:
+                state=self.inspect_page()
+                if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])
+            self.page.wait_for_timeout(200)
+        raise AccountAttention('login_response_timeout' if self.login_post_sent else 'login_submit_timeout')
 
     def login(self,username,password):
         phase='open_form'
@@ -242,10 +269,12 @@ class AccountBrowser:
             self.page.get_by_role('textbox',name='아이디 또는 전화번호',exact=True).fill(username)
             self.page.get_by_role('textbox',name='비밀번호',exact=True).fill(password)
             phase='submit_form'
+            self.submitted_document_version=self.document_version
             self.page.get_by_role('button',name='로그인',exact=True).click()
             # A Naver message/interstitial may share the login URL. Inspect its
             # DOM, then verify an actual authenticated Series menu, not a URL.
             phase='await_redirect'
+            self.wait_for_login_response()
             state=self.inspect_page()
             post_submit_dom=state['dom_kind']
             if self.dialog_seen:raise AccountAttention(self.dialog_reason)
@@ -262,6 +291,7 @@ class AccountBrowser:
             diagnostics={'phase':phase,'page_kind':login_page_kind(self.page.url),
                          'blocked_navigation':self.blocked_navigation,'access_stopped':self.blocked,
                          'login_post_sent':self.login_post_sent,'login_http_status':self.login_http_status,
+                         'login_response_navigation':self.login_response_navigation,
                          'dialog_seen':self.dialog_seen,'dialog_kind':self.dialog_kind,
                          'blocked_resource_count':self.blocked_resource_count,'page_error_count':self.page_error_count,
                          'post_submit_dom':post_submit_dom,**state}

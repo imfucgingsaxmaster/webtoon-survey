@@ -63,6 +63,112 @@ class SeriesAccountTests(unittest.TestCase):
         self.assertTrue(browser.login_post_sent);self.assertEqual(browser.login_http_status,200)
         request.post_data.assert_not_called()
 
+    def waiting_browser(self):
+        browser=account.AccountBrowser();browser.error=RuntimeError;browser.page=MagicMock()
+        browser.page.url=account.LOGIN
+        browser.login_post_sent=False;browser.login_http_status=None
+        browser.login_response_navigation=False
+        browser.document_version=3;browser.submitted_document_version=3
+        browser.blocked=False;browser.blocked_navigation=False
+        browser.dialog_seen=False;browser.dialog_kind=None;browser.dialog_reason='login_requires_attention'
+        browser.blocked_resource_count=0;browser.page_error_count=0
+        browser.inspect_page=Mock(return_value={
+            'known_reason':'login_requires_attention','password_field_visible':True,
+            'id_field_visible':True,'body_text_present':True,'dom_kind':'password_form'})
+        clock={'now':0.0,'pumps':0}
+        def advance(milliseconds):
+            clock['now']+=milliseconds/1000
+            clock['pumps']+=1
+        browser.page.wait_for_timeout.side_effect=advance
+        return browser,clock,advance
+
+    def test_delayed_post_waits_for_same_url_document_commit(self):
+        browser,clock,advance=self.waiting_browser()
+        initial_url=browser.page.url
+        def events(milliseconds):
+            advance(milliseconds)
+            if clock['pumps']==2:browser.login_post_sent=True
+            if clock['pumps']==3:
+                browser.login_http_status=200;browser.login_response_navigation=True
+            if clock['pumps']==4:browser.navigated(browser.page.main_frame)
+        browser.page.wait_for_timeout.side_effect=events
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']):
+            browser.wait_for_login_response(timeout=2)
+        self.assertEqual(clock['pumps'],4)
+        self.assertEqual(browser.page.url,initial_url)
+        browser.page.wait_for_load_state.assert_called_once_with('domcontentloaded',timeout=10000)
+        browser.page.goto.assert_not_called();browser.page.get_by_role.assert_not_called()
+
+    def test_fast_committed_post_is_not_missed_after_click_returns(self):
+        browser,clock,_=self.waiting_browser()
+        browser.login_post_sent=True;browser.login_http_status=200
+        browser.login_response_navigation=True;browser.document_version=4
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']):
+            browser.wait_for_login_response(timeout=2)
+        browser.page.wait_for_timeout.assert_not_called()
+        browser.page.wait_for_load_state.assert_called_once()
+
+    def test_xhr_response_waits_until_initial_password_form_changes(self):
+        browser,clock,advance=self.waiting_browser()
+        browser.login_post_sent=True;browser.login_http_status=200
+        def events(milliseconds):
+            advance(milliseconds)
+            if clock['pumps']==2:
+                browser.inspect_page.return_value={
+                    'known_reason':'login_requires_attention','password_field_visible':False}
+        browser.page.wait_for_timeout.side_effect=events
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']):
+            browser.wait_for_login_response(timeout=2)
+        self.assertEqual(clock['pumps'],2)
+        browser.page.goto.assert_not_called()
+
+    def test_wait_timeout_distinguishes_unsent_from_unfinished_request(self):
+        for sent,code in ((False,'login_submit_timeout'),(True,'login_response_timeout')):
+            with self.subTest(sent=sent):
+                browser,clock,_=self.waiting_browser();browser.login_post_sent=sent
+                with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']),\
+                     self.assertRaises(account.AccountAttention) as caught:
+                    browser.wait_for_login_response(timeout=1)
+                self.assertEqual(str(caught.exception),code)
+                self.assertGreaterEqual(clock['now'],1)
+                browser.page.get_by_role.assert_not_called();browser.page.goto.assert_not_called()
+
+    def test_wait_stops_on_block_or_verification_without_retry(self):
+        for reason in ('access_stopped','captcha_required','additional_verification','credentials_rejected'):
+            with self.subTest(reason=reason):
+                browser,clock,_=self.waiting_browser()
+                if reason=='access_stopped':browser.blocked=True
+                else:browser.inspect_page.return_value['known_reason']=reason
+                with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']),\
+                     self.assertRaises(account.AccountAttention) as caught:
+                    browser.wait_for_login_response(timeout=1)
+                self.assertEqual(str(caught.exception),reason)
+                browser.page.wait_for_timeout.assert_not_called()
+                browser.page.get_by_role.assert_not_called();browser.page.goto.assert_not_called()
+
+    def test_login_timeout_submits_credentials_only_once(self):
+        browser,clock,_=self.waiting_browser()
+        username=Mock();password=Mock();submit=Mock()
+        def role(role,*,name,exact):
+            return {'아이디 또는 전화번호':username,'비밀번호':password,'로그인':submit}[name]
+        browser.page.get_by_role.side_effect=role
+        browser.verify_series_session=Mock()
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']),\
+             self.assertRaises(account.AccountAttention) as caught:
+            browser.login('synthetic-user','synthetic-password')
+        self.assertEqual(str(caught.exception),'login_submit_timeout')
+        submit.click.assert_called_once();username.fill.assert_called_once();password.fill.assert_called_once()
+        browser.verify_series_session.assert_not_called()
+        self.assertNotIn('synthetic-user',json.dumps(caught.exception.diagnostics))
+        self.assertNotIn('synthetic-password',json.dumps(caught.exception.diagnostics))
+
+    def test_child_frame_navigation_cannot_complete_login_document_wait(self):
+        browser,_,_=self.waiting_browser()
+        browser.navigated(Mock())
+        self.assertEqual(browser.document_version,3)
+        browser.navigated(browser.page.main_frame)
+        self.assertEqual(browser.document_version,4)
+
     def session_browser(self,authenticated=False,reason='login_requires_attention'):
         browser=account.AccountBrowser()
         browser.error=RuntimeError
