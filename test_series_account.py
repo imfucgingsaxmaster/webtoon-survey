@@ -258,6 +258,9 @@ class SeriesAccountTests(unittest.TestCase):
             locator.first=locator
             locator.count.return_value=1
             locator.is_visible.return_value=False
+            def wait_visible(*args,_locator=locator,**kwargs):
+                if not _locator.is_visible():raise RuntimeError('synthetic visibility timeout')
+            locator.wait_for.side_effect=wait_visible
         selectors['#gnb_my'].is_visible.return_value=authenticated
         selectors['#gnb_login_button'].is_visible.return_value=not authenticated
         def open_menu(*args,**kwargs):
@@ -282,6 +285,35 @@ class SeriesAccountTests(unittest.TestCase):
         browser.page.goto.assert_called_once()
         self.assertEqual(browser.page.goto.call_args.args[0],account.HOME)
 
+    def test_async_account_menu_replaces_initial_login_template_before_verification(self):
+        browser,selectors=self.session_browser(authenticated=True)
+        selectors['#gnb_my'].is_visible.return_value=False
+        selectors['#gnb_login_button'].is_visible.return_value=True
+        def finish_account_lookup(*args,**kwargs):
+            self.assertTrue(selectors['#gnb_login_button'].is_visible())
+            selectors['#gnb_my'].is_visible.return_value=True
+            selectors['#gnb_login_button'].is_visible.return_value=False
+        selectors['#gnb_my'].wait_for.side_effect=finish_account_lookup
+        self.assertTrue(browser.verify_series_session())
+        selectors['#gnb_my'].wait_for.assert_called_once_with(state='visible',timeout=8000)
+        selectors['#gnb_my'].click.assert_called_once()
+        selectors['#gnb_logout_button'].click.assert_not_called()
+
+    def test_hidden_logout_template_does_not_prove_authentication(self):
+        browser,selectors=self.session_browser()
+        self.assertEqual(selectors['#gnb_logout_button'].count(),1)
+        self.assertFalse(selectors['#gnb_logout_button'].is_visible())
+        self.assertFalse(browser.verify_series_session())
+        selectors['#gnb_my'].click.assert_not_called()
+        selectors['#gnb_logout_button'].click.assert_not_called()
+
+    def test_ready_account_menu_without_visible_logout_is_unconfirmed(self):
+        browser,selectors=self.session_browser(authenticated=True)
+        selectors['#gnb_my'].click.side_effect=None
+        self.assertFalse(browser.verify_series_session())
+        selectors['#gnb_my'].click.assert_called_once()
+        selectors['#gnb_logout_button'].wait_for.assert_called_once_with(state='visible',timeout=3000)
+
     def test_home_with_no_authentication_markers_is_unconfirmed(self):
         browser,selectors=self.session_browser()
         selectors['#gnb_login_button'].is_visible.return_value=False
@@ -295,6 +327,9 @@ class SeriesAccountTests(unittest.TestCase):
         selectors['#gnb_login_button'].is_visible.return_value=True
         with patch.object(account.time,'sleep'):
             self.assertFalse(browser.verify_series_session())
+        selectors['#gnb_my'].click.assert_called_once()
+        self.assertTrue(selectors['#gnb_logout_button'].is_visible())
+        self.assertTrue(selectors['#gnb_login_button'].is_visible())
 
     def test_password_prompt_after_home_navigation_is_not_accepted(self):
         browser,selectors=self.session_browser(authenticated=True)

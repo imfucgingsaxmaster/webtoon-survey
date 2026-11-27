@@ -69,7 +69,8 @@ def safe_diagnostics(value):
     for key,allowed in enums.items():
         if isinstance(value.get(key),str) and value[key] in allowed:result[key]=value[key]
     for key in ('blocked_navigation','access_stopped','login_post_sent','id_present','password_present',
-                'id_field_visible','password_field_visible','body_text_present','dialog_seen','login_response_navigation'):
+                'id_field_visible','password_field_visible','body_text_present','dialog_seen','login_response_navigation',
+                'account_menu_visible','login_button_visible','logout_button_visible'):
         if type(value.get(key)) is bool:result[key]=value[key]
     for key in ('visible_input_count','visible_button_count','frame_count','blocked_resource_count','page_error_count'):
         if type(value.get(key)) is int and 0<=value[key]<=10000:result[key]=value[key]
@@ -185,10 +186,13 @@ class AccountBrowser:
     def inspect_page(self):
         """Classify the visible DOM without returning text or any input values."""
         state=self.page.evaluate('''() => {
-          const visible=e => !!(e.getClientRects().length) && getComputedStyle(e).visibility!=='hidden';
+          const visible=e => !!e && !!(e.getClientRects().length) && getComputedStyle(e).visibility!=='hidden';
           const inputs=Array.from(document.querySelectorAll('input')).filter(visible);
           const notices=Array.from(document.querySelectorAll('[role="alert"],.error_message,.error_text,.error')).filter(visible);
           return {document_ready_state:document.readyState,
+            account_menu_visible:visible(document.querySelector('#gnb_my')),
+            login_button_visible:visible(document.querySelector('#gnb_login_button')),
+            logout_button_visible:visible(document.querySelector('#gnb_logout_button')),
             body_text:document.body?.innerText || '',
             notice_text:notices.map(e=>e.innerText || '').join(' '),
             id_field_visible:inputs.some(e=>e.id==='id'||e.autocomplete==='username'),
@@ -220,7 +224,9 @@ class AccountBrowser:
         state=self.inspect_page()
         if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])
         if state['password_field_visible']:return False
-        if self.page.locator('#gnb_login_button').is_visible():return False
+        # GNB initially shows the login template until its asynchronous account
+        # lookup finishes. Wait for the positive account marker before judging
+        # the login button; the final check still rejects contradictory UI.
         account_menu=self.page.locator('#gnb_my')
         try:account_menu.wait_for(state='visible',timeout=8000)
         except self.error:return False
