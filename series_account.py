@@ -44,6 +44,9 @@ def login_reason(text):
     # Keep only a fixed reason code, never the page's account-specific text.
     text=' '.join(text.split())
     for words,code in [
+        (('자동화된 접근','자동화된 접속','접근이 제한','접속이 제한'),'access_restricted'),
+        (('보호조치','보호 조치','계정이 정지'),'account_protection'),
+        (('잘못된 요청','잘못된 접근','유효하지 않은 요청','Invalid request'),'invalid_login_request'),
         (('아이디를 입력','비밀번호를 입력','필수 정보입니다'),'input_required'),
         (('자동입력 방지','자동 입력 방지','보안 문자','보안문자','로봇이 아닙니다','로봇이 아님','영수증 문제','CAPTCHA'),'captcha_required'),
         (('2단계 인증','2단계인증','인증번호','인증 번호'),'additional_verification'),
@@ -57,12 +60,19 @@ def login_reason(text):
 def safe_diagnostics(value):
     """Only enumerated stages, flags and HTTP statuses may reach public logs."""
     result={}
-    enums={'phase':{'open_form','enter_credentials','submit_form','await_redirect'},
-           'page_kind':{'login_form','naver_verification','series_home','series_other','naver_home','other'}}
+    enums={'phase':{'open_form','enter_credentials','submit_form','await_redirect','verify_session'},
+           'page_kind':{'login_form','naver_verification','series_home','series_other','naver_home','other'},
+           'document_ready_state':{'loading','interactive','complete'},
+           'dom_kind':{'password_form','verification','content','blank'},
+           'post_submit_dom':{'password_form','verification','content','blank'},
+           'dialog_kind':{'alert','confirm','prompt','beforeunload'}}
     for key,allowed in enums.items():
-        if value.get(key) in allowed:result[key]=value[key]
-    for key in ('blocked_navigation','access_stopped','login_post_sent','id_present','password_present'):
+        if isinstance(value.get(key),str) and value[key] in allowed:result[key]=value[key]
+    for key in ('blocked_navigation','access_stopped','login_post_sent','id_present','password_present',
+                'id_field_visible','password_field_visible','body_text_present','dialog_seen'):
         if type(value.get(key)) is bool:result[key]=value[key]
+    for key in ('visible_input_count','visible_button_count','frame_count','blocked_resource_count','page_error_count'):
+        if type(value.get(key)) is int and 0<=value[key]<=10000:result[key]=value[key]
     status=value.get('login_http_status')
     if type(status) is int and 100<=status<=599:result['login_http_status']=status
     return result
@@ -120,8 +130,15 @@ class AccountBrowser:
             self.page.set_default_timeout(20000)
             self.login_post_sent=False
             self.login_http_status=None
+            self.blocked_resource_count=0
+            self.page_error_count=0
+            self.dialog_seen=False
+            self.dialog_kind=None
+            self.dialog_reason='login_requires_attention'
             self.page.on('request',self.request)
             self.page.on('response',self.response)
+            self.page.on('dialog',self.dialog)
+            self.page.on('pageerror',self.page_error)
             self.blocked=False
             self.blocked_navigation=False
             return self
@@ -137,9 +154,68 @@ class AccountBrowser:
         allowed=(host=='naver.com' or host.endswith('.naver.com') or
                  host=='pstatic.net' or host.endswith('.pstatic.net'))
         if not allowed:
+            self.blocked_resource_count=getattr(self,'blocked_resource_count',0)+1
             if route.request.is_navigation_request():self.blocked_navigation=True
             route.abort()
         else:route.continue_()
+
+    def page_error(self,_error):
+        self.page_error_count+=1
+
+    def dialog(self,dialog):
+        self.dialog_seen=True
+        self.dialog_kind=dialog.type
+        self.dialog_reason=login_reason(dialog.message)
+        # Match Playwright's default dismissal; never confirm a security prompt.
+        dialog.dismiss()
+
+    def inspect_page(self):
+        """Classify the visible DOM without returning text or any input values."""
+        state=self.page.evaluate('''() => {
+          const visible=e => !!(e.getClientRects().length) && getComputedStyle(e).visibility!=='hidden';
+          const inputs=Array.from(document.querySelectorAll('input')).filter(visible);
+          const notices=Array.from(document.querySelectorAll('[role="alert"],.error_message,.error_text,.error')).filter(visible);
+          return {document_ready_state:document.readyState,
+            body_text:document.body?.innerText || '',
+            notice_text:notices.map(e=>e.innerText || '').join(' '),
+            id_field_visible:inputs.some(e=>e.id==='id'||e.autocomplete==='username'),
+            password_field_visible:inputs.some(e=>e.type==='password'),
+            visible_input_count:inputs.length,
+            visible_button_count:Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible).length};
+        }''')
+        body=state.pop('body_text','');notice=state.pop('notice_text','')
+        state['body_text_present']=bool(body.strip())
+        reason=login_reason(notice)
+        if reason=='login_requires_attention' and not state.get('password_field_visible'):
+            reason=login_reason(body)
+        state['known_reason']=reason
+        state['frame_count']=len(self.page.frames)
+        state['dom_kind']=('verification' if reason!='login_requires_attention' else
+            'password_form' if state.get('password_field_visible') else
+            'content' if state['body_text_present'] else 'blank')
+        return state
+
+    def verify_series_session(self):
+        """Verify the existing session with the real Series account menu."""
+        if self.blocked:raise AccountAttention('access_stopped')
+        state=self.inspect_page()
+        if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])
+        if state['password_field_visible']:return False
+        self.page.goto(HOME,wait_until='domcontentloaded')
+        if self.blocked:raise AccountAttention('access_stopped')
+        if urlsplit(self.page.url).hostname!='series.naver.com':return False
+        state=self.inspect_page()
+        if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])
+        if state['password_field_visible']:return False
+        if self.page.locator('#gnb_login_button').is_visible():return False
+        account_menu=self.page.locator('#gnb_my')
+        try:account_menu.wait_for(state='visible',timeout=8000)
+        except self.error:return False
+        account_menu.click()
+        try:self.page.locator('#gnb_logout_button').wait_for(state='visible',timeout=3000)
+        except self.error:return False
+        return (self.page.locator('#gnb_logout_button').is_visible() and
+                not self.page.locator('#gnb_login_button').is_visible())
 
     def request(self,request):
         parts=urlsplit(request.url)
@@ -157,6 +233,7 @@ class AccountBrowser:
 
     def login(self,username,password):
         phase='open_form'
+        post_submit_dom=None
         try:
             self.page.goto(LOGIN,wait_until='domcontentloaded')
             if self.blocked or urlsplit(self.page.url).hostname!='nid.naver.com':
@@ -166,26 +243,28 @@ class AccountBrowser:
             self.page.get_by_role('textbox',name='비밀번호',exact=True).fill(password)
             phase='submit_form'
             self.page.get_by_role('button',name='로그인',exact=True).click()
-            # CAPTCHA, OTP, device and age verification are never handled here.
+            # A Naver message/interstitial may share the login URL. Inspect its
+            # DOM, then verify an actual authenticated Series menu, not a URL.
             phase='await_redirect'
-            self.page.wait_for_url(HOME,timeout=30000,wait_until='domcontentloaded')
-            if self.blocked:raise AccountAttention('access_stopped')
-        except self.error:
-            reason='login_requires_attention'
-            for frame in self.page.frames:
-                try:
-                    if frame!=self.page.main_frame and not frame.frame_element().is_visible():continue
-                    candidate=login_reason(frame.locator('body').inner_text(timeout=1000))
-                    if candidate!='login_requires_attention':reason=candidate;break
-                except self.error:pass
+            state=self.inspect_page()
+            post_submit_dom=state['dom_kind']
+            if self.dialog_seen:raise AccountAttention(self.dialog_reason)
+            if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])
+            phase='verify_session'
+            if not self.verify_series_session():raise AccountAttention('auth_unconfirmed')
+        except (self.error,AccountAttention) as exc:
+            reason=str(exc) if isinstance(exc,AccountAttention) else 'login_requires_attention'
+            state={}
+            try:
+                state=self.inspect_page()
+                if state['known_reason']!='login_requires_attention':reason=state['known_reason']
+            except self.error:pass
             diagnostics={'phase':phase,'page_kind':login_page_kind(self.page.url),
                          'blocked_navigation':self.blocked_navigation,'access_stopped':self.blocked,
-                         'login_post_sent':self.login_post_sent,'login_http_status':self.login_http_status}
-            if diagnostics['page_kind']=='login_form':
-                for key,label in [('id_present','아이디 또는 전화번호'),('password_present','비밀번호')]:
-                    try:
-                        diagnostics[key]=self.page.get_by_role('textbox',name=label,exact=True).evaluate('(el) => Boolean(el.value)')
-                    except self.error:pass
+                         'login_post_sent':self.login_post_sent,'login_http_status':self.login_http_status,
+                         'dialog_seen':self.dialog_seen,'dialog_kind':self.dialog_kind,
+                         'blocked_resource_count':self.blocked_resource_count,'page_error_count':self.page_error_count,
+                         'post_submit_dom':post_submit_dom,**state}
             raise AccountAttention(reason,safe_diagnostics(diagnostics)) from None
 
     def read(self,ident):

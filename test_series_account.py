@@ -63,6 +63,116 @@ class SeriesAccountTests(unittest.TestCase):
         self.assertTrue(browser.login_post_sent);self.assertEqual(browser.login_http_status,200)
         request.post_data.assert_not_called()
 
+    def session_browser(self,authenticated=False,reason='login_requires_attention'):
+        browser=account.AccountBrowser()
+        browser.error=RuntimeError
+        browser.blocked=False;browser.blocked_navigation=False
+        browser.page=MagicMock();browser.page.url=account.HOME
+        browser.page.goto.return_value=Mock(status=200)
+        browser.inspect_page=Mock(return_value={
+            'body_text_present':True,'id_field_visible':False,'password_field_visible':False,
+            'known_reason':reason,'document_ready_state':'complete',
+            'visible_input_count':1,'visible_button_count':1,'frame_count':0})
+        selectors={name:MagicMock() for name in ('#gnb_my','#gnb_logout_button','#gnb_login_button')}
+        for locator in selectors.values():
+            locator.first=locator
+            locator.count.return_value=1
+            locator.is_visible.return_value=False
+        selectors['#gnb_my'].is_visible.return_value=authenticated
+        selectors['#gnb_login_button'].is_visible.return_value=not authenticated
+        def open_menu(*args,**kwargs):
+            selectors['#gnb_logout_button'].is_visible.return_value=authenticated
+        selectors['#gnb_my'].click.side_effect=open_menu
+        browser.page.locator.side_effect=lambda selector:selectors[selector]
+        return browser,selectors
+
+    def test_public_home_does_not_prove_a_signed_in_session(self):
+        browser,selectors=self.session_browser()
+        with patch.object(account.time,'sleep'):
+            self.assertFalse(browser.verify_series_session())
+        selectors['#gnb_my'].click.assert_not_called()
+        selectors['#gnb_logout_button'].click.assert_not_called()
+
+    def test_authenticated_menu_must_expose_logout_without_login(self):
+        browser,selectors=self.session_browser(authenticated=True)
+        with patch.object(account.time,'sleep'):
+            self.assertTrue(browser.verify_series_session())
+        selectors['#gnb_my'].click.assert_called_once()
+        selectors['#gnb_logout_button'].click.assert_not_called()
+        browser.page.goto.assert_called_once()
+        self.assertEqual(browser.page.goto.call_args.args[0],account.HOME)
+
+    def test_home_with_no_authentication_markers_is_unconfirmed(self):
+        browser,selectors=self.session_browser()
+        selectors['#gnb_login_button'].is_visible.return_value=False
+        selectors['#gnb_my'].wait_for.side_effect=RuntimeError('synthetic timeout')
+        with patch.object(account.time,'sleep'):
+            self.assertFalse(browser.verify_series_session())
+        selectors['#gnb_my'].click.assert_not_called()
+
+    def test_contradictory_login_marker_is_not_accepted_as_authenticated(self):
+        browser,selectors=self.session_browser(authenticated=True)
+        selectors['#gnb_login_button'].is_visible.return_value=True
+        with patch.object(account.time,'sleep'):
+            self.assertFalse(browser.verify_series_session())
+
+    def test_password_prompt_after_home_navigation_is_not_accepted(self):
+        browser,selectors=self.session_browser(authenticated=True)
+        before=browser.inspect_page.return_value
+        after={**before,'password_field_visible':True}
+        browser.inspect_page.side_effect=[before,after]
+        with patch.object(account.time,'sleep'):
+            self.assertFalse(browser.verify_series_session())
+        selectors['#gnb_my'].click.assert_not_called()
+
+    def test_known_verification_stops_before_any_account_menu_click(self):
+        for reason in ('captcha_required','additional_verification','device_verification'):
+            with self.subTest(reason=reason):
+                browser,selectors=self.session_browser(authenticated=True,reason=reason)
+                with patch.object(account.time,'sleep'),self.assertRaises(account.AccountAttention) as caught:
+                    browser.verify_series_session()
+                self.assertEqual(str(caught.exception),reason)
+                selectors['#gnb_my'].click.assert_not_called()
+
+    def test_blocked_access_cannot_become_authenticated(self):
+        browser,selectors=self.session_browser(authenticated=True)
+        browser.blocked=True
+        with patch.object(account.time,'sleep'),self.assertRaises(account.AccountAttention) as caught:
+            browser.verify_series_session()
+        self.assertEqual(str(caught.exception),'access_stopped')
+        selectors['#gnb_my'].click.assert_not_called()
+
+    def test_missing_fields_are_reported_without_waiting_for_credential_locators(self):
+        browser=account.AccountBrowser();browser.error=RuntimeError;browser.page=MagicMock()
+        browser.page.evaluate.return_value={
+            'body_text':'private-account unrelated page text','notice_text':'',
+            'id_field_visible':False,'password_field_visible':False,
+            'document_ready_state':'complete','visible_input_count':0,
+            'visible_button_count':0,'frame_count':0}
+        result=browser.inspect_page()
+        self.assertFalse(result['id_field_visible']);self.assertFalse(result['password_field_visible'])
+        self.assertTrue(result['body_text_present'])
+        browser.page.get_by_role.assert_not_called()
+        browser.page.locator.assert_not_called()
+        browser.page.wait_for_timeout.assert_not_called()
+        self.assertNotIn('body_text',result);self.assertNotIn('notice_text',result)
+        self.assertNotIn('private-account',json.dumps(result))
+
+    def test_page_notices_are_classified_without_exporting_private_text(self):
+        browser=account.AccountBrowser();browser.error=RuntimeError;browser.page=MagicMock()
+        browser.page.evaluate.return_value={
+            'body_text':'private-account private-password',
+            'notice_text':'private-account: 2단계 인증이 필요합니다',
+            'id_field_visible':False,'password_field_visible':False,
+            'document_ready_state':'complete','visible_input_count':0,
+            'visible_button_count':1,'frame_count':0}
+        result=browser.inspect_page()
+        self.assertEqual(result['known_reason'],'additional_verification')
+        encoded=json.dumps(result)
+        for private in ('private-account','private-password'):
+            self.assertNotIn(private,encoded)
+        self.assertNotIn('body_text',result);self.assertNotIn('notice_text',result)
+
     def fixture(self):
         snapshot={'titles':[{'title_id':'1','title':'작품','author':'작가','status':'연재'}]}
         cache={'schema_version':1,'webtoon':{'1':{'contents_no':'10'}},'series':{},
