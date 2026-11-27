@@ -96,7 +96,9 @@ class SeriesAccountTests(unittest.TestCase):
             browser.wait_for_login_response(timeout=2)
         self.assertEqual(clock['pumps'],4)
         self.assertEqual(browser.page.url,initial_url)
-        browser.page.wait_for_load_state.assert_called_once_with('domcontentloaded',timeout=10000)
+        browser.page.wait_for_load_state.assert_called_once()
+        self.assertEqual(browser.page.wait_for_load_state.call_args.args,('domcontentloaded',))
+        self.assertLessEqual(browser.page.wait_for_load_state.call_args.kwargs['timeout'],2000)
         browser.page.goto.assert_not_called();browser.page.get_by_role.assert_not_called()
 
     def test_fast_committed_post_is_not_missed_after_click_returns(self):
@@ -168,6 +170,78 @@ class SeriesAccountTests(unittest.TestCase):
         self.assertEqual(browser.document_version,3)
         browser.navigated(browser.page.main_frame)
         self.assertEqual(browser.document_version,4)
+
+    def test_context_replacement_during_async_login_waits_for_new_document(self):
+        browser,clock,advance=self.waiting_browser()
+        ordinary=browser.inspect_page.return_value
+        def inspect():
+            if clock['pumps']==2:
+                raise RuntimeError('Execution context was destroyed, most likely because of a navigation')
+            return ordinary
+        browser.inspect_page.side_effect=inspect
+        def events(milliseconds):
+            advance(milliseconds)
+            if clock['pumps']==2:browser.login_post_sent=True
+            if clock['pumps']==3:
+                browser.login_http_status=200;browser.login_response_navigation=True
+            if clock['pumps']==4:browser.navigated(browser.page.main_frame)
+        browser.page.wait_for_timeout.side_effect=events
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']):
+            browser.wait_for_login_response(timeout=2)
+        self.assertEqual(clock['pumps'],4)
+        browser.page.get_by_role.assert_not_called();browser.page.goto.assert_not_called()
+
+    def test_non_navigation_errors_are_not_silenced_by_polling(self):
+        for method in ('wait_for_login_response','settled_page'):
+            with self.subTest(method=method):
+                browser,clock,_=self.waiting_browser()
+                failure=RuntimeError('Unexpected browser evaluation failure')
+                browser.inspect_page.side_effect=failure
+                with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']),\
+                     self.assertRaises(RuntimeError) as caught:
+                    getattr(browser,method)(timeout=1)
+                self.assertIs(caught.exception,failure)
+                browser.page.wait_for_timeout.assert_not_called()
+
+    def test_settled_page_waits_through_loading_and_context_replacement(self):
+        browser,clock,_=self.waiting_browser()
+        complete={'document_ready_state':'complete','known_reason':'login_requires_attention',
+                  'password_field_visible':False,'dom_kind':'content'}
+        browser.inspect_page.side_effect=[{'document_ready_state':'loading'},
+            RuntimeError('Cannot find context with specified id'),complete]
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']):
+            result=browser.settled_page(timeout=1)
+        self.assertEqual(result,complete);self.assertEqual(clock['pumps'],2)
+        browser.page.goto.assert_not_called();browser.page.get_by_role.assert_not_called()
+
+    def test_settled_page_keeps_one_deadline_during_repeated_transitions(self):
+        for transient in (False,True):
+            with self.subTest(transient=transient):
+                browser,clock,_=self.waiting_browser()
+                if transient:
+                    browser.inspect_page.side_effect=RuntimeError('Execution context was destroyed')
+                else:
+                    browser.inspect_page.return_value={'document_ready_state':'loading'}
+                with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']),\
+                     self.assertRaises(account.AccountAttention) as caught:
+                    browser.settled_page(timeout=1)
+                self.assertEqual(str(caught.exception),'page_load_timeout')
+                self.assertGreaterEqual(clock['now'],1);self.assertLessEqual(clock['now'],1.2)
+                browser.page.goto.assert_not_called();browser.page.get_by_role.assert_not_called()
+
+    def test_committed_response_load_wait_respects_callers_remaining_budget(self):
+        browser,clock,_=self.waiting_browser()
+        browser.login_post_sent=True;browser.login_http_status=200
+        browser.login_response_navigation=True;browser.document_version=4
+        with patch.object(account.time,'monotonic',side_effect=lambda:clock['now']):
+            browser.wait_for_login_response(timeout=1)
+        self.assertLessEqual(browser.page.wait_for_load_state.call_args.kwargs['timeout'],1000)
+
+    def test_context_error_classifier_does_not_treat_other_failures_as_navigation(self):
+        self.assertTrue(account.navigation_in_progress(RuntimeError('Execution context was destroyed')))
+        self.assertTrue(account.navigation_in_progress(RuntimeError('Cannot find context with specified id')))
+        self.assertFalse(account.navigation_in_progress(RuntimeError('Access denied')))
+        self.assertFalse(account.navigation_in_progress(RuntimeError('Timeout 20000ms exceeded')))
 
     def session_browser(self,authenticated=False,reason='login_requires_attention'):
         browser=account.AccountBrowser()

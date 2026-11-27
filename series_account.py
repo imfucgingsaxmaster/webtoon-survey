@@ -78,6 +78,13 @@ def safe_diagnostics(value):
     return result
 
 
+def navigation_in_progress(error):
+    # Inspect only fixed runtime phrases; never return raw browser errors.
+    return any(text in str(error) for text in (
+        'Execution context was destroyed','Cannot find context with specified id',
+        'most likely because of a navigation'))
+
+
 def pending_series(snapshot, metadata, since):
     frozen=frozen_ids(snapshot,metadata)['series']
     blocked=set(metadata.get('unavailable',{}).get('series',{}))
@@ -244,19 +251,37 @@ class AccountBrowser:
         while time.monotonic()<deadline:
             if self.blocked:raise AccountAttention('access_stopped')
             if self.dialog_seen:raise AccountAttention(self.dialog_reason)
-            if self.login_http_status is not None:
-                if self.login_response_navigation and self.document_version>self.submitted_document_version:
-                    self.page.wait_for_load_state('domcontentloaded',timeout=10000)
-                    return
-                if not self.login_response_navigation:
+            try:
+                if self.login_http_status is not None:
+                    if self.login_response_navigation and self.document_version>self.submitted_document_version:
+                        remaining_ms=max(1,int((deadline-time.monotonic())*1000))
+                        self.page.wait_for_load_state('domcontentloaded',timeout=min(10000,remaining_ms))
+                        return
+                    if not self.login_response_navigation:
+                        state=self.inspect_page()
+                        if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])
+                        if not state['password_field_visible']:return
+                else:
                     state=self.inspect_page()
                     if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])
-                    if not state['password_field_visible']:return
-            else:
-                state=self.inspect_page()
-                if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])
+            except self.error as exc:
+                if not navigation_in_progress(exc):raise
             self.page.wait_for_timeout(200)
         raise AccountAttention('login_response_timeout' if self.login_post_sent else 'login_submit_timeout')
+
+    def settled_page(self,timeout=10):
+        """Read after document replacement, retaining the original timeout."""
+        deadline=time.monotonic()+timeout
+        while time.monotonic()<deadline:
+            if self.blocked:raise AccountAttention('access_stopped')
+            if self.dialog_seen:raise AccountAttention(self.dialog_reason)
+            try:
+                state=self.inspect_page()
+                if state['document_ready_state']!='loading':return state
+            except self.error as exc:
+                if not navigation_in_progress(exc):raise
+            self.page.wait_for_timeout(200)
+        raise AccountAttention('page_load_timeout')
 
     def login(self,username,password):
         phase='open_form'
@@ -275,7 +300,7 @@ class AccountBrowser:
             # DOM, then verify an actual authenticated Series menu, not a URL.
             phase='await_redirect'
             self.wait_for_login_response()
-            state=self.inspect_page()
+            state=self.settled_page()
             post_submit_dom=state['dom_kind']
             if self.dialog_seen:raise AccountAttention(self.dialog_reason)
             if state['known_reason']!='login_requires_attention':raise AccountAttention(state['known_reason'])
