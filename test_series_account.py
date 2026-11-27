@@ -44,6 +44,41 @@ class SeriesAccountTests(unittest.TestCase):
         self.assertEqual(account.login_reason('잠시 후 다시 시도해주세요'),'temporarily_unavailable')
         self.assertEqual(account.login_reason('private-account / private-password'),'login_requires_attention')
 
+    def test_security_confirmation_has_its_own_fixed_reason(self):
+        for text in ('private-account: 보안 확인','private-account: 보안확인','보안\n확인'):
+            with self.subTest(text=text):
+                self.assertEqual(account.login_reason(text),'security_check_required')
+        self.assertEqual(account.login_reason('보안 확인: 보안문자를 입력하세요'),'captcha_required')
+
+    def test_captcha_diagnostic_accepts_only_boolean_and_never_attributes(self):
+        for value in (True,False):
+            self.assertEqual(account.safe_diagnostics({'captcha_element_visible':value}),
+                             {'captcha_element_visible':value})
+        for value in ('true','private-account',1,0,None,[],{}):
+            with self.subTest(type=type(value).__name__):
+                self.assertEqual(account.safe_diagnostics({'captcha_element_visible':value}),{})
+        self.assertEqual(account.safe_diagnostics({
+            'captcha_element_visible':True,'captcha_src':'https://private.example/captcha?id=private-account',
+            'captcha_title':'private-password','captcha_attributes':['private-account']}),
+            {'captcha_element_visible':True})
+
+    def test_visible_captcha_marker_stops_even_without_recognized_notice(self):
+        browser=account.AccountBrowser();browser.error=RuntimeError;browser.page=MagicMock()
+        browser.page.evaluate.return_value={
+            'body_text':'private-account private-password','notice_text':'',
+            'control_texts':['확인','private-account 확인'],
+            'captcha_element_visible':True,'id_field_visible':False,'password_field_visible':False,
+            'document_ready_state':'complete','visible_input_count':1,'visible_button_count':3}
+        state=browser.inspect_page()
+        self.assertEqual(state['known_reason'],'captcha_required')
+        self.assertEqual(state['dom_kind'],'verification')
+        self.assertTrue(state['captcha_element_visible'])
+        for result in (state,account.safe_diagnostics(state)):
+            encoded=json.dumps(result,ensure_ascii=False)
+            self.assertNotIn('private-account',encoded);self.assertNotIn('private-password',encoded)
+            for key in ('body_text','notice_text','control_texts'):self.assertNotIn(key,result)
+        browser.page.get_by_role.assert_not_called();browser.page.locator.assert_not_called()
+
     def test_login_diagnostics_only_keep_allowlisted_types_and_values(self):
         safe=account.safe_diagnostics({'phase':'await_redirect','page_kind':'login_form',
              'login_post_sent':True,'login_http_status':200,'id_present':True,'password_present':True,
@@ -188,7 +223,7 @@ class SeriesAccountTests(unittest.TestCase):
                 browser.page.get_by_role.assert_not_called();browser.page.goto.assert_not_called()
 
     def test_wait_stops_on_block_or_verification_without_retry(self):
-        for reason in ('access_stopped','captcha_required','additional_verification','credentials_rejected'):
+        for reason in ('access_stopped','captcha_required','security_check_required','additional_verification','credentials_rejected'):
             with self.subTest(reason=reason):
                 browser,clock,_=self.waiting_browser()
                 if reason=='access_stopped':browser.blocked=True
@@ -328,7 +363,7 @@ class SeriesAccountTests(unittest.TestCase):
         browser.page.locator.assert_not_called()
 
     def test_redirect_wait_stops_for_verification_block_or_dialog(self):
-        for reason in ('captcha_required','additional_verification','device_verification',
+        for reason in ('captcha_required','security_check_required','additional_verification','device_verification',
                        'credentials_rejected','access_stopped','dialog'):
             with self.subTest(reason=reason):
                 browser,clock,_=self.redirect_browser()
@@ -505,7 +540,7 @@ class SeriesAccountTests(unittest.TestCase):
         selectors['#gnb_my'].click.assert_not_called()
 
     def test_known_verification_stops_before_any_account_menu_click(self):
-        for reason in ('captcha_required','additional_verification','device_verification'):
+        for reason in ('captcha_required','security_check_required','additional_verification','device_verification'):
             with self.subTest(reason=reason):
                 browser,selectors=self.session_browser(authenticated=True,reason=reason)
                 with patch.object(account.time,'sleep'),self.assertRaises(account.AccountAttention) as caught:

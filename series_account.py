@@ -60,6 +60,7 @@ def login_reason(text):
         (('잘못된 요청','잘못된 접근','유효하지 않은 요청','Invalid request'),'invalid_login_request'),
         (('아이디를 입력','비밀번호를 입력','필수 정보입니다'),'input_required'),
         (('자동입력 방지','자동 입력 방지','보안 문자','보안문자','로봇이 아닙니다','로봇이 아님','영수증 문제','CAPTCHA'),'captcha_required'),
+        (('보안 확인','보안확인'),'security_check_required'),
         (('2단계 인증','2단계인증','인증번호','인증 번호'),'additional_verification'),
         (('해외 로그인','해외 IP','새로운 기기','새 기기'),'device_verification'),
         (('비밀번호를 잘못','비밀번호가 일치','등록되지 않은 아이디','비밀번호가 잘못','비밀번호를 확인','비밀번호를 다시 확인','아이디를 확인','로그인 전용 아이디'),'credentials_rejected'),
@@ -81,7 +82,7 @@ def safe_diagnostics(value):
         if isinstance(value.get(key),str) and value[key] in allowed:result[key]=value[key]
     for key in ('blocked_navigation','access_stopped','login_post_sent','id_present','password_present',
                 'id_field_visible','password_field_visible','body_text_present','dialog_seen','login_response_navigation',
-                'account_menu_visible','login_button_visible','logout_button_visible'):
+                'account_menu_visible','login_button_visible','logout_button_visible','captcha_element_visible'):
         if type(value.get(key)) is bool:result[key]=value[key]
     for key in ('visible_input_count','visible_button_count','frame_count','blocked_resource_count','page_error_count'):
         if type(value.get(key)) is int and 0<=value[key]<=10000:result[key]=value[key]
@@ -207,6 +208,8 @@ class AccountBrowser:
             account_menu_visible:visible(document.querySelector('#gnb_my')),
             login_button_visible:visible(document.querySelector('#gnb_login_button')),
             logout_button_visible:visible(document.querySelector('#gnb_logout_button')),
+            captcha_element_visible:Array.from(document.querySelectorAll('img,iframe,input')).filter(visible).some(e=>
+                /captcha|chptcha/i.test([e.id,e.getAttribute('name'),e.getAttribute('src'),e.getAttribute('title')].join(' '))),
             body_text:document.body?.innerText || '',
             notice_text:notices.map(e=>e.innerText || '').join(' '),
             control_texts:Array.from(document.querySelectorAll('button,[role="button"],a')).filter(visible).map(e=>e.innerText || ''),
@@ -225,6 +228,8 @@ class AccountBrowser:
         if reason=='login_requires_attention' and not state.get('password_field_visible'):
             reason=login_reason(body)
         state['known_reason']=reason
+        if state.get('captcha_element_visible'):state['known_reason']='captcha_required'
+        reason=state['known_reason']
         state['frame_count']=len(self.page.frames)
         state['dom_kind']=('verification' if reason!='login_requires_attention' else
             'password_form' if state.get('password_field_visible') else
